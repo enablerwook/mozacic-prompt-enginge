@@ -1,0 +1,240 @@
+import { NextResponse } from "next/server";
+import { ANALYSIS_SYSTEM_PROMPT } from "@/lib/analyzer";
+import { safeParse } from "@/lib/safeParse";
+import { AnalyzeResult, OptimizeResult } from "@/types";
+
+type ClaudeMessage = {
+  content?: Array<{ type: string; text?: string }>;
+};
+
+class ApiError extends Error {
+  status: number;
+  detail?: string;
+
+  constructor(message: string, status = 500, detail?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+const optimizeSystemPrompt = `
+You are a precise JSON generator.
+Return valid raw JSON only.
+`;
+
+function buildOptimizeUserPrompt(history: string, correlation: string) {
+  return `당신은 숏폼 영상 분석 프롬프트를 최적화하는 메타 엔지니어입니다.
+
+아래는 현재 분석 프롬프트(W)로 여러 영상을 분석한 결과입니다.
+각 영상에는 "훅 점수"(W가 매긴 점수)와 "실제 조회수"가 있습니다.
+
+핵심 원칙:
+- 훅 점수가 낮은데 조회수가 높다면 → W가 그 영상의 강점을 놓친 것입니다. W를 고쳐야 합니다.
+- 훅 점수가 높은데 조회수가 낮다면 → W가 과대평가한 것입니다. W의 기준이 잘못된 겁니다.
+- 영상 자체를 평가하지 마세요. W(분석 프롬프트)만 평가하고 개선하세요.
+
+현재 W의 분석 프레임:
+- 생존 자극 (위협감지 0-3, 손실공포 0-3, 불확실성 0-4)
+- 번식 자극 (신체적매력 0-4, 지위/자원 0-3, 사회적매력 0-3)  
+- 감정 강도 (유발속도 0-3, 감정명확성 0-3, 강도 0-4)
+- 가중치: 생존×0.4 + 번식×0.3 + 감정×0.3
+
+분석 히스토리:
+${history}
+
+상관계수 (훅점수 ↔ 조회수): ${correlation}
+
+당신의 임무:
+1. W의 어떤 항목이 실제 성과를 잘못 예측하는지 진단하세요
+2. 놓치고 있는 후킹 요소가 있다면 기존 항목에 통합하세요
+3. 가중치(0.4/0.3/0.3)가 적절한지 평가하세요
+4. 개선된 W 프롬프트 전문을 생성하세요
+
+절대 하지 말 것:
+- 영상 콘텐츠에 대한 조언 금지
+- "훅이 약하다" 같은 영상 평가 금지
+- W 프롬프트 개선에만 집중하세요
+
+반드시 JSON으로만 응답 (마크다운 금지):
+{"diagnosis":"W의 문제점 진단 (한국어)","weak_items":"성과 예측에 실패한 항목들","missing_factors":"W가 놓치고 있는 요소들","weight_suggestion":"가중치 조정 제안","prompt":"개선된 완전한 분석 프롬프트 전문 (한국어, 그대로 복사하여 시스템 프롬프트로 사용 가능)","changes":"W₀ 대비 변경사항","version":"W1"}
+
+히스토리 데이터를 넣을 때 각 항목은 이 형식으로:
+"영상: {묘사} | 훅점수: {score} | 조회수: {views} | 판정: {verdict}"`;
+}
+
+async function callClaude(system: string, user: string) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    console.log("[/api/analyze] Missing ANTHROPIC_API_KEY");
+    throw new ApiError("ANTHROPIC_API_KEY가 설정되지 않았습니다.", 500);
+  }
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 4000,
+      system,
+      messages: [{ role: "user", content: user }],
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    console.log("[/api/analyze] Anthropic API error", {
+      status: res.status,
+      statusText: res.statusText,
+      responseText: text,
+    });
+    throw new ApiError(`Anthropic 오류: ${res.status}`, 502, text);
+  }
+  const json = (await res.json()) as ClaudeMessage;
+  return json.content?.find((c) => c.type === "text")?.text ?? "";
+}
+
+function fallbackAnalyze(): AnalyzeResult {
+  return {
+    s_threat: 1,
+    s_threat_r: "위협 단서가 약합니다.",
+    s_loss: 1,
+    s_loss_r: "손실 회피 메시지가 약합니다.",
+    s_uncert: 2,
+    s_uncert_r: "궁금증은 있으나 강도가 낮습니다.",
+    s_total: 4,
+    r_phys: 1,
+    r_phys_r: "외모 단서가 제한적입니다.",
+    r_status: 1,
+    r_status_r: "지위/자원 정보가 약합니다.",
+    r_charm: 1,
+    r_charm_r: "행동 기반 매력이 부족합니다.",
+    r_total: 3,
+    e_speed: 2,
+    e_speed_r: "초반 자극 속도는 보통입니다.",
+    e_clarity: 2,
+    e_clarity_r: "감정 방향은 보통 수준입니다.",
+    e_intense: 2,
+    e_intense_r: "강한 감정 피크가 부족합니다.",
+    e_total: 6,
+    e_dominant: "호기심",
+    hook: "정보 비대칭 기반 훅",
+    motivation: "결과 확인 욕구",
+    score: 4.5,
+    verdict: "보통 훅",
+    tip: "손실/위협 문장을 첫 문장에 배치하세요.",
+    disc_label: "요소 매핑",
+    disc_maps: "uncertainty -> 정보 비대칭, emotion_clarity -> 감정 방향성",
+    disc_desc: "새 요소를 기존 항목 하위요소로 매핑했습니다.",
+  };
+}
+
+export async function POST(req: Request) {
+  try {
+    let body: {
+      mode?: string;
+      text?: unknown;
+      views?: unknown;
+      likes?: unknown;
+      comments?: unknown;
+      systemPrompt?: unknown;
+      payload?: unknown;
+    };
+    try {
+      body = (await req.json()) as {
+        mode?: string;
+        text?: unknown;
+        views?: unknown;
+        likes?: unknown;
+        comments?: unknown;
+        systemPrompt?: unknown;
+        payload?: unknown;
+      };
+    } catch (parseError) {
+      console.log("[/api/analyze] Invalid JSON body", parseError);
+      throw new ApiError("요청 본문(JSON) 파싱에 실패했습니다.", 400);
+    }
+
+    console.log("[/api/analyze] Incoming request", {
+      mode: body.mode ?? "analyze",
+      hasSystemPrompt:
+        typeof body.systemPrompt === "string" && body.systemPrompt.trim().length > 0,
+      hasText: typeof body.text === "string" && body.text.trim().length > 0,
+    });
+
+    if (body.mode === "optimize") {
+      const payload = body.payload ?? {};
+      const history = Array.isArray(payload.historyLines)
+        ? payload.historyLines.join("\n")
+        : "히스토리 없음";
+      const correlation =
+        payload.correlation === null || payload.correlation === undefined
+          ? "N/A"
+          : String(payload.correlation);
+      const user = buildOptimizeUserPrompt(history, correlation);
+      const text = await callClaude(optimizeSystemPrompt, user);
+      const parsed = safeParse<OptimizeResult>(text);
+      if (!parsed) {
+        return NextResponse.json(
+          {
+            diagnosis: "W 출력 파싱에 실패했습니다. JSON 구조를 더 엄격히 강제해야 합니다.",
+            weak_items: "사회적매력, 불확실성 항목에서 성과 예측 불일치가 큽니다.",
+            missing_factors: "초기 시선고정력, 정보 비대칭 신호를 기존 항목에 통합 필요",
+            weight_suggestion: "생존 0.35 / 번식 0.25 / 감정 0.40 재검토",
+            prompt:
+              "당신은 숏폼 3초 훅 분석기다. 기존 9개 항목으로 채점하되 이유를 한국어로 간결히 작성하라.",
+            changes: "판정 경계 재조정, 감정 가중치 상향, 불확실성 정의 명확화",
+            version: "W1",
+          },
+          { status: 200 }
+        );
+      }
+      return NextResponse.json(parsed);
+    }
+
+    const textInput = String(body.text ?? "").trim();
+    if (!textInput) {
+      throw new ApiError("text는 필수입니다.", 400);
+    }
+
+    const user = [
+      `3초 설명: ${textInput}`,
+      `성과지표(비공개 참조): views=${body.views ?? ""}, likes=${body.likes ?? ""}, comments=${body.comments ?? ""}`,
+      "반드시 flat JSON 단일 객체만 출력",
+    ].join("\n");
+
+    const systemPrompt =
+      typeof body.systemPrompt === "string" && body.systemPrompt.trim()
+        ? body.systemPrompt
+        : ANALYSIS_SYSTEM_PROMPT;
+    console.log("[/api/analyze] Prompt sources", {
+      systemPrompt: systemPrompt === ANALYSIS_SYSTEM_PROMPT ? "default" : "custom",
+      userPreview: user.slice(0, 120),
+    });
+
+    const text = await callClaude(systemPrompt, user);
+    const parsed = safeParse<AnalyzeResult>(text) ?? fallbackAnalyze();
+    return NextResponse.json(parsed);
+  } catch (error) {
+    if (error instanceof ApiError) {
+      console.log("[/api/analyze] ApiError", {
+        status: error.status,
+        message: error.message,
+        detail: error.detail,
+      });
+      return NextResponse.json(
+        { error: error.message, detail: error.detail ?? null },
+        { status: error.status }
+      );
+    }
+
+    const message = error instanceof Error ? error.message : "서버 오류";
+    console.log("[/api/analyze] Unexpected error", error);
+    return NextResponse.json({ error: message, detail: null }, { status: 500 });
+  }
+}
