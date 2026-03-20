@@ -33,21 +33,29 @@ export default function ScoreBars({ title, icon, color, items }: Props) {
       <div className="space-y-3">
         {items.map((item) => (
           <div key={item.name}>
+            {(() => {
+              const safeValue = Number.isFinite(item.value) ? item.value : 0;
+              const width = Math.max(0, Math.min(100, safeValue * 10));
+              return (
+                <>
             <div className="mb-1 flex items-center justify-between text-xs text-[#e0e0e0]">
               <span>{labelMap[item.name] ?? item.name}</span>
-              <span>{item.value}</span>
+              <span>{safeValue}</span>
             </div>
             <div className="h-[6px] rounded-full bg-[#23233a]">
               <div
                 className="h-[6px] rounded-full"
                 aria-label={`${item.name}-progress`}
                 style={{
-                  width: `${Math.min(100, item.value * 10)}%`,
+                  width: `${width}%`,
                   background: colorMap[color],
                 }}
               />
             </div>
             <p className="mt-1 text-xs text-[#b0b0b0]">{item.reason}</p>
+                </>
+              );
+            })()}
           </div>
         ))}
       </div>

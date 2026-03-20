@@ -24,6 +24,97 @@ You are a precise JSON generator.
 Return valid raw JSON only.
 `;
 
+const RESPONSE_FORMAT_INSTRUCTION = `
+위의 분석 기준으로 평가한 뒤, 반드시 아래 JSON 형식으로만 응답하세요.
+다른 텍스트나 마크다운 없이 순수 JSON만 출력하세요.
+
+{"s_threat":0,"s_threat_r":"위협감지 이유","s_loss":0,"s_loss_r":"손실공포 이유","s_uncert":0,"s_uncert_r":"불확실성 이유","s_total":0,"r_phys":0,"r_phys_r":"신체적매력 이유","r_status":0,"r_status_r":"지위자원 이유","r_charm":0,"r_charm_r":"사회적매력 이유","r_total":0,"e_speed":0,"e_speed_r":"유발속도 이유","e_clarity":0,"e_clarity_r":"감정명확성 이유","e_intense":0,"e_intense_r":"강도 이유","e_total":0,"e_dominant":"지배감정","hook":"훅 메커니즘","motivation":"시청 동기","score":0.0,"verdict":"판정","tip":"개선 제안","disc_label":"","disc_maps":"","disc_desc":""}
+
+점수 규칙:
+- s_threat: 0-3, s_loss: 0-3, s_uncert: 0-4, s_total: 합계(0-10)
+- r_phys: 0-4, r_status: 0-3, r_charm: 0-3, r_total: 합계(0-10)
+- e_speed: 0-3, e_clarity: 0-3, e_intense: 0-4, e_total: 합계(0-10)
+- score: s_total*0.4 + r_total*0.3 + e_total*0.3 (소수점 1자리)
+- verdict: "강력한 훅"(>=6) / "보통 훅"(3-5.9) / "약한 훅"(1-2.9) / "훅 없음"(<1)
+- 모든 이유(_r)는 한국어로
+- disc_* 는 발견시에만 채우고 없으면 빈 문자열
+`;
+
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function toNumber(value: unknown, fallback = 0) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function toText(value: unknown, fallback = "") {
+  if (typeof value === "string") return value.trim();
+  return fallback;
+}
+
+function verdictByScore(score: number) {
+  if (score >= 6) return "강력한 훅";
+  if (score >= 3) return "보통 훅";
+  if (score >= 1) return "약한 훅";
+  return "훅 없음";
+}
+
+function normalizeAnalyzeResult(input?: Partial<AnalyzeResult> | null): AnalyzeResult {
+  const base = fallbackAnalyze();
+  const s_threat = clamp(toNumber(input?.s_threat, base.s_threat), 0, 3);
+  const s_loss = clamp(toNumber(input?.s_loss, base.s_loss), 0, 3);
+  const s_uncert = clamp(toNumber(input?.s_uncert, base.s_uncert), 0, 4);
+  const s_total = clamp(s_threat + s_loss + s_uncert, 0, 10);
+
+  const r_phys = clamp(toNumber(input?.r_phys, base.r_phys), 0, 4);
+  const r_status = clamp(toNumber(input?.r_status, base.r_status), 0, 3);
+  const r_charm = clamp(toNumber(input?.r_charm, base.r_charm), 0, 3);
+  const r_total = clamp(r_phys + r_status + r_charm, 0, 10);
+
+  const e_speed = clamp(toNumber(input?.e_speed, base.e_speed), 0, 3);
+  const e_clarity = clamp(toNumber(input?.e_clarity, base.e_clarity), 0, 3);
+  const e_intense = clamp(toNumber(input?.e_intense, base.e_intense), 0, 4);
+  const e_total = clamp(e_speed + e_clarity + e_intense, 0, 10);
+
+  const score = Number((s_total * 0.4 + r_total * 0.3 + e_total * 0.3).toFixed(1));
+
+  return {
+    s_threat,
+    s_threat_r: toText(input?.s_threat_r, base.s_threat_r),
+    s_loss,
+    s_loss_r: toText(input?.s_loss_r, base.s_loss_r),
+    s_uncert,
+    s_uncert_r: toText(input?.s_uncert_r, base.s_uncert_r),
+    s_total,
+    r_phys,
+    r_phys_r: toText(input?.r_phys_r, base.r_phys_r),
+    r_status,
+    r_status_r: toText(input?.r_status_r, base.r_status_r),
+    r_charm,
+    r_charm_r: toText(input?.r_charm_r, base.r_charm_r),
+    r_total,
+    e_speed,
+    e_speed_r: toText(input?.e_speed_r, base.e_speed_r),
+    e_clarity,
+    e_clarity_r: toText(input?.e_clarity_r, base.e_clarity_r),
+    e_intense,
+    e_intense_r: toText(input?.e_intense_r, base.e_intense_r),
+    e_total,
+    e_dominant: toText(input?.e_dominant, base.e_dominant),
+    hook: toText(input?.hook, base.hook),
+    motivation: toText(input?.motivation, base.motivation),
+    score,
+    verdict: toText(input?.verdict, verdictByScore(score)),
+    tip: toText(input?.tip, base.tip),
+    disc_label: toText(input?.disc_label, ""),
+    disc_maps: toText(input?.disc_maps, ""),
+    disc_desc: toText(input?.disc_desc, ""),
+  };
+}
+
 function buildOptimizeUserPrompt(history: string, correlation: string) {
   return `당신은 숏폼 영상 분석 프롬프트를 최적화하는 메타 엔지니어입니다.
 
@@ -208,18 +299,20 @@ export async function POST(req: Request) {
       "반드시 flat JSON 단일 객체만 출력",
     ].join("\n");
 
-    const systemPrompt =
+    const userCustomW =
       typeof body.systemPrompt === "string" && body.systemPrompt.trim()
         ? body.systemPrompt
         : ANALYSIS_SYSTEM_PROMPT;
+    const systemPrompt = `${userCustomW}\n\n${RESPONSE_FORMAT_INSTRUCTION}`;
     console.log("[/api/analyze] Prompt sources", {
       systemPrompt: systemPrompt === ANALYSIS_SYSTEM_PROMPT ? "default" : "custom",
       userPreview: user.slice(0, 120),
     });
 
     const text = await callClaude(systemPrompt, user);
-    const parsed = safeParse<AnalyzeResult>(text) ?? fallbackAnalyze();
-    return NextResponse.json(parsed);
+    const parsed = safeParse<AnalyzeResult>(text);
+    const normalized = normalizeAnalyzeResult(parsed ?? fallbackAnalyze());
+    return NextResponse.json(normalized);
   } catch (error) {
     if (error instanceof ApiError) {
       console.log("[/api/analyze] ApiError", {

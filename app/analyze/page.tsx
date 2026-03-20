@@ -42,6 +42,17 @@ function parseGroundTruth(value?: string | null) {
   }
 }
 
+function safeNum(value: unknown, fallback = 0) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function safeText(value: unknown, fallback = "없음") {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  return fallback;
+}
+
 export default function AnalyzePage() {
   const [text, setText] = useState("");
   const [views, setViews] = useState("");
@@ -510,14 +521,14 @@ export default function AnalyzePage() {
               <p className="text-sm text-[#b0b0b0]">HOOK SCORE</p>
               <p
                 className={`font-mono-ui text-[56px] font-extrabold leading-none ${
-                  result.score >= 8 ? "score-strong" : "score-mid"
+                  safeNum(result.score) >= 8 ? "score-strong" : "score-mid"
                 }`}
               >
-                {result.score}
+                {safeNum(result.score).toFixed(1)}
               </p>
               <p className="mt-3">
                 <span className="rounded-full border border-[#2a2a40] bg-[#121224] px-3 py-1 text-sm text-[#e0e0e0]">
-                  {result.verdict}
+                  {safeText(result.verdict, "훅 없음")}
                 </span>
               </p>
             </div>
@@ -562,9 +573,9 @@ export default function AnalyzePage() {
           </section>
 
           <section className="card space-y-2 p-5 text-sm text-[#e0e0e0]">
-            <p>지배감정: {result.e_dominant}</p>
-            <p>훅 메커니즘: {result.hook}</p>
-            <p>시청 동기: {result.motivation}</p>
+            <p>지배감정: {safeText(result.e_dominant)}</p>
+            <p>훅 메커니즘: {safeText(result.hook)}</p>
+            <p>시청 동기: {safeText(result.motivation)}</p>
             <button className="btn" onClick={() => setShowReason((v) => !v)}>
               상세 분석 근거 토글
             </button>
@@ -574,10 +585,10 @@ export default function AnalyzePage() {
               </div>
             )}
             <p>
-              발견된 하위 요소: <span className="text-[#00ff88]">{result.disc_label}</span>
+              발견된 하위 요소: <span className="text-[#00ff88]">{safeText(result.disc_label, "없음")}</span>
             </p>
-            <p className="text-[#b0b0b0]">매핑: {result.disc_maps}</p>
-            <p className="text-[#00ff88]">개선 제안: {result.tip}</p>
+            <p className="text-[#b0b0b0]">매핑: {safeText(result.disc_maps, "없음")}</p>
+            <p className="text-[#00ff88]">개선 제안: {safeText(result.tip, "없음")}</p>
           </section>
         </>
       )}
