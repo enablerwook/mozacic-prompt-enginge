@@ -52,18 +52,9 @@ export default function AnalyzePage() {
   const [message, setMessage] = useState("");
   const [showReason, setShowReason] = useState(false);
   const [showPromptEditor, setShowPromptEditor] = useState(false);
-  const [systemPrompt, setSystemPrompt] = useState(() => {
-    if (typeof window === "undefined") return ANALYSIS_SYSTEM_PROMPT;
-    const storedPrompt = localStorage.getItem(W_PROMPT_STORAGE_KEY);
-    return storedPrompt && storedPrompt.trim()
-      ? storedPrompt
-      : ANALYSIS_SYSTEM_PROMPT;
-  });
-  const [wVersion, setWVersion] = useState(() => {
-    if (typeof window === "undefined") return 0;
-    const storedVersion = Number(localStorage.getItem(W_VERSION_STORAGE_KEY) ?? "0");
-    return Number.isNaN(storedVersion) ? 0 : storedVersion;
-  });
+  const [systemPrompt, setSystemPrompt] = useState(ANALYSIS_SYSTEM_PROMPT);
+  const [wVersion, setWVersion] = useState(0);
+  const [mounted, setMounted] = useState(false);
   const [count, setCount] = useState(0);
   const [rows, setRows] = useState<DatasetRow[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -85,6 +76,21 @@ export default function AnalyzePage() {
   const subElementCount = useMemo(() => {
     return result?.disc_maps ? result.disc_maps.split(",").length : 0;
   }, [result]);
+
+  useEffect(() => {
+    const loadLocalState = () => {
+      const storedPrompt = localStorage.getItem(W_PROMPT_STORAGE_KEY);
+      const storedVersion = Number(localStorage.getItem(W_VERSION_STORAGE_KEY) ?? "0");
+      if (storedPrompt && storedPrompt.trim()) {
+        setSystemPrompt(storedPrompt);
+      }
+      if (!Number.isNaN(storedVersion)) {
+        setWVersion(storedVersion);
+      }
+      setMounted(true);
+    };
+    loadLocalState();
+  }, []);
 
   useEffect(() => {
     async function loadRows() {
@@ -287,7 +293,8 @@ export default function AnalyzePage() {
       <section className="card p-5">
         <h1 className="text-2xl font-bold text-white">3초 훅 분석기</h1>
         <p className="mt-2 text-sm text-[#b0b0b0]">
-          분석 횟수 {count} · 하위요소 수 {subElementCount} · 현재 W{toSubscript(wVersion)}
+          분석 횟수 {count} · 하위요소 수 {subElementCount} ·{" "}
+          {mounted ? `현재 W${toSubscript(wVersion)}` : "W 버전 로딩 중..."}
         </p>
       </section>
 

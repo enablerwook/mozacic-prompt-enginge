@@ -14,11 +14,13 @@ const menus = [
 export default function Sidebar() {
   const pathname = usePathname();
   const [wVersion, setWVersion] = useState(0);
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     const loadVersion = () => {
       const version = Number(localStorage.getItem(W_VERSION_STORAGE_KEY) ?? "0");
       if (!Number.isNaN(version)) setWVersion(version);
+      setMounted(true);
     };
     loadVersion();
     window.addEventListener("focus", loadVersion);
@@ -31,7 +33,9 @@ export default function Sidebar() {
         <div className="mb-6 rounded-xl border border-[#1a1a2e] bg-[#0d0d1a] p-4">
           <p className="text-lg font-semibold text-white">⚡ Mozaic Prompt</p>
           <p className="mt-1 text-xs text-[#b0b0b0]">3초 훅 프롬프트 최적화 엔진</p>
-          <p className="mt-2 text-xs text-[#ff3b5c]">현재 W{toSubscript(wVersion)}</p>
+          <p className="mt-2 text-xs text-[#ff3b5c]">
+            {mounted ? `현재 W${toSubscript(wVersion)}` : "W 로딩 중..."}
+          </p>
         </div>
         <nav className="space-y-2">
           {menus.map((m) => {
