@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import MockDataTable from "@/components/optimize/MockDataTable";
 import PromptDiffView from "@/components/optimize/PromptDiffView";
@@ -36,7 +36,9 @@ export default function OptimizePage() {
   const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [aiModel, setAiModel] = useState<"claude" | "gemini">("claude");
+  const [geminiVersion, setGeminiVersion] = useState<"gemini-2.5-flash" | "gemini-2.0-flash" | "gemini-1.5-pro" | "gemini-1.5-flash">("gemini-2.5-flash");
   const [repeatCount, setRepeatCount] = useState(1);
+  const abortRef = useRef<AbortController | null>(null);
   const [currentRound, setCurrentRound] = useState<number | null>(null);
   const [scoreProgress, setScoreProgress] = useState<{ current: number; total: number } | null>(null);
   const [runMeta, setRunMeta] = useState<{
@@ -124,6 +126,9 @@ export default function OptimizePage() {
     setRunMeta(null);
     setScoreProgress(null);
 
+    const abort = new AbortController();
+    abortRef.current = abort;
+
     const rounds = Math.max(1, Math.min(repeatCount, 10));
     let iterW = currentW.trim() || null;
 
@@ -132,6 +137,7 @@ export default function OptimizePage() {
     setScoreProgress({ current: 0, total: targetRows.length });
 
     for (let i = 0; i < targetRows.length; i++) {
+      if (abort.signal.aborted) break;
       const row = targetRows[i];
       setScoreProgress({ current: i + 1, total: targetRows.length });
       try {
@@ -139,6 +145,7 @@ export default function OptimizePage() {
         const res = await fetch("/api/analyze", {
           method: "POST",
           headers: { "content-type": "application/json" },
+          signal: abort.signal,
           body: JSON.stringify({
             text: scoreText,
             views: row.views,
@@ -152,11 +159,18 @@ export default function OptimizePage() {
             scoreMap.set(row.id, { score: d.score, verdict: d.verdict ?? "-" });
           }
         }
-      } catch {
+      } catch (e) {
+        if ((e as Error).name === "AbortError") break;
         // 채점 실패 시 해당 행은 "-"로 유지
       }
     }
     setScoreProgress(null);
+
+    if (abort.signal.aborted) {
+      setLoading(false);
+      setMessage("중지되었습니다.");
+      return;
+    }
 
     // ── Phase 2: 실제 훅점수 ↔ 조회수 상관계수 계산 ────────────────
     const scoredRows = targetRows.filter((r) => scoreMap.has(r.id));
@@ -173,13 +187,16 @@ export default function OptimizePage() {
     let lastResult: OptimizeResult | null = null;
 
     for (let i = 1; i <= rounds; i++) {
+      if (abort.signal.aborted) break;
       setCurrentRound(i);
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "content-type": "application/json" },
+        signal: abort.signal,
         body: JSON.stringify({
           mode: "optimize",
           ai: aiModel,
+          geminiVersion,
           payload: {
             correlation: hookCorr ?? stats.corr,
             currentW: iterW,
@@ -312,60 +329,83 @@ export default function OptimizePage() {
         상태: {correlationLabel(stats.corr)}
       </section>
 
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex rounded-lg border border-zinc-200 overflow-hidden text-sm font-medium">
-          <button
-            type="button"
-            onClick={() => setAiModel("claude")}
-            className={`px-4 py-2 transition ${
-              aiModel === "claude"
-                ? "bg-zinc-900 text-white"
-                : "bg-white text-zinc-600 hover:bg-zinc-50"
-            }`}
-          >
-            Claude
-          </button>
-          <button
-            type="button"
-            onClick={() => setAiModel("gemini")}
-            className={`px-4 py-2 border-l border-zinc-200 transition ${
-              aiModel === "gemini"
-                ? "bg-zinc-900 text-white"
-                : "bg-white text-zinc-600 hover:bg-zinc-50"
-            }`}
-          >
-            Gemini
-          </button>
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* AI 선택 */}
+          <div className="flex rounded-lg border border-zinc-200 overflow-hidden text-sm font-medium">
+            {(["claude", "gemini"] as const).map((m, idx) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setAiModel(m)}
+                className={`px-4 py-2 transition ${idx > 0 ? "border-l border-zinc-200" : ""} ${
+                  aiModel === m ? "bg-zinc-900 text-white" : "bg-white text-zinc-600 hover:bg-zinc-50"
+                }`}
+              >
+                {m === "claude" ? "Claude" : "Gemini"}
+              </button>
+            ))}
+          </div>
+
+          {/* 반복 회차 */}
+          <div className="flex items-center gap-2 text-sm text-zinc-600">
+            <label htmlFor="repeat-count">반복</label>
+            <input
+              id="repeat-count"
+              type="number"
+              min={1}
+              max={10}
+              value={repeatCount}
+              onChange={(e) => setRepeatCount(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
+              className="input w-14 text-center text-sm"
+            />
+            <span className="text-zinc-400">회</span>
+          </div>
+
+          {/* 실행 / 중지 버튼 */}
+          {loading ? (
+            <button
+              type="button"
+              className="btn bg-red-600 text-white hover:bg-red-700 border-red-600"
+              onClick={() => abortRef.current?.abort()}
+            >
+              ■ 중지
+            </button>
+          ) : (
+            <button className="btn" onClick={runOptimize} disabled={rows.length < 2}>
+              ⚡ W 최적화 실행
+            </button>
+          )}
         </div>
-        <div className="flex items-center gap-2 text-sm text-zinc-600">
-          <label htmlFor="repeat-count">반복 회차</label>
-          <input
-            id="repeat-count"
-            type="number"
-            min={1}
-            max={10}
-            value={repeatCount}
-            onChange={(e) => setRepeatCount(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
-            className="input w-16 text-center text-sm"
-          />
-          <span className="text-zinc-400">회</span>
-        </div>
-        <button className="btn" onClick={runOptimize} disabled={loading || rows.length < 2}>
-          {loading
-            ? scoreProgress
-              ? `채점 중... ${scoreProgress.current}/${scoreProgress.total}`
-              : currentRound !== null
-                ? `최적화 중... (${currentRound}/${repeatCount}회차)`
-                : "준비 중..."
-            : "⚡ W 최적화 실행"}
-        </button>
+
+        {/* Gemini 버전 선택 (gemini 선택 시만 표시) */}
+        {aiModel === "gemini" && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-zinc-500">Gemini 버전</span>
+            <div className="flex rounded-lg border border-zinc-200 overflow-hidden text-xs font-medium">
+              {(["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"] as const).map((v, idx) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setGeminiVersion(v)}
+                  className={`px-3 py-1.5 transition ${idx > 0 ? "border-l border-zinc-200" : ""} ${
+                    geminiVersion === v ? "bg-zinc-900 text-white" : "bg-white text-zinc-600 hover:bg-zinc-50"
+                  }`}
+                >
+                  {v.replace("gemini-", "")}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {loading && scoreProgress && (
         <div className="space-y-1">
-          <p className="text-xs text-zinc-500">
-            W로 각 영상 채점 중 — {scoreProgress.current}/{scoreProgress.total}건
-          </p>
+          <div className="flex items-center justify-between text-xs text-zinc-500">
+            <span>W로 각 영상 채점 중 — {scoreProgress.current}/{scoreProgress.total}건</span>
+            <span>{Math.round((scoreProgress.current / scoreProgress.total) * 100)}%</span>
+          </div>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-200">
             <div
               className="h-full rounded-full bg-blue-500 transition-[width] duration-150"

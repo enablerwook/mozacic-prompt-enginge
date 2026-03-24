@@ -158,12 +158,22 @@ ${history}
 "영상: {묘사} | 훅점수: {score} | 조회수: {views} | 판정: {verdict}"`;
 }
 
-async function callGemini(system: string, user: string) {
+const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"] as const;
+type GeminiModel = typeof GEMINI_MODELS[number];
+
+function resolveGeminiModel(raw: unknown): GeminiModel {
+  if (typeof raw === "string" && (GEMINI_MODELS as readonly string[]).includes(raw)) {
+    return raw as GeminiModel;
+  }
+  return "gemini-2.5-flash";
+}
+
+async function callGemini(system: string, user: string, model: GeminiModel = "gemini-2.5-flash") {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new ApiError("GEMINI_API_KEY가 설정되지 않았습니다.", 500);
 
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -260,6 +270,7 @@ export async function POST(req: Request) {
     let body: {
       mode?: string;
       ai?: string;
+      geminiVersion?: string;
       text?: unknown;
       views?: unknown;
       likes?: unknown;
@@ -271,6 +282,7 @@ export async function POST(req: Request) {
       body = (await req.json()) as {
         mode?: string;
         ai?: string;
+        geminiVersion?: string;
         text?: unknown;
         views?: unknown;
         likes?: unknown;
@@ -304,9 +316,11 @@ export async function POST(req: Request) {
         : null;
       const user = buildOptimizeUserPrompt(history, correlation, currentW);
       const useGemini = body.ai === "gemini";
+      const geminiModel = resolveGeminiModel(body.geminiVersion);
       const text = useGemini
-        ? await callGemini(optimizeSystemPrompt, user)
+        ? await callGemini(optimizeSystemPrompt, user, geminiModel)
         : await callClaude(optimizeSystemPrompt, user);
+      console.log("[/api/analyze] optimize raw response", text?.slice(0, 500));
       const parsed = safeParse<OptimizeResult>(text);
       if (!parsed) {
         return NextResponse.json(
