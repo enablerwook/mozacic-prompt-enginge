@@ -17,19 +17,19 @@ export type OptimizeContextField =
   | "verdict";
 
 export const DEFAULT_OPTIMIZE_FIELDS: Record<OptimizeContextField, boolean> = {
-  title: true,
-  description: true,
-  script: true,
+  title: false,
+  description: false,
+  script: false,
   createdAt: false,
-  language: true,
-  contentType: true,
-  views: true,
-  likes: true,
-  likeRatio: true,
-  uploadDate: true,
-  elapsed: true,
-  hookScore: true,
-  verdict: true,
+  language: false,
+  contentType: false,
+  views: false,
+  likes: false,
+  likeRatio: false,
+  uploadDate: false,
+  elapsed: false,
+  hookScore: false,
+  verdict: false,
 };
 
 /** MockMozaicRow를 최적화 API용 한 줄로 직렬화 (체크된 필드만 포함) */
