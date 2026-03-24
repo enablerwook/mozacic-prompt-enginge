@@ -12,7 +12,7 @@ import {
   type OptimizeContextField,
   type HookScoreEntry,
 } from "@/lib/optimizeFields";
-import { pearsonCorrelation } from "@/lib/stats";
+import { pearsonCorrelation, spearmanCorrelation } from "@/lib/stats";
 import { ANALYSIS_SYSTEM_PROMPT } from "@/lib/analyzer";
 import { W_PROMPT_STORAGE_KEY, W_VERSION_STORAGE_KEY } from "@/lib/wPrompt";
 import {
@@ -337,10 +337,17 @@ export default function OptimizePage() {
         // ── 상관계수 계산 (이번 회차에 실제 채점된 행만 사용) ────────
         // 미채점 행은 이전 W 기준 점수이므로 제외 → 정확한 현재 W 성능 측정
         const scoredRows = rowsForRound.filter((r) => scoreMap.has(r.id));
-        const hookScores = scoredRows.map((r) => scoreMap.get(r.id)!.score);
-        const viewCounts = scoredRows.map((r) => r.views);
-        lastHookCorr = scoredRows.length >= 2
-          ? pearsonCorrelation(hookScores, viewCounts)
+
+        // views=0 행은 분산=0을 유발해 상관계수를 null로 만들므로 제외
+        const rowsForCorr = scoredRows.filter((r) => r.views > 0);
+        const hookScoresForCorr = rowsForCorr.map((r) => scoreMap.get(r.id)!.score);
+        const viewCountsForCorr = rowsForCorr.map((r) => r.views);
+
+        // 스피어만 순위 상관계수: 피어슨보다 강건
+        // - 원시값 대신 순위 비교 → 분포 편향·저분산에도 유효값 반환
+        // - null은 n < 3이거나 모든 점수가 완전히 동일할 때만 발생
+        lastHookCorr = rowsForCorr.length >= 3
+          ? spearmanCorrelation(hookScoresForCorr, viewCountsForCorr)
           : null;
         setHookCorrHistory((prev) => [...prev, lastHookCorr]);
 

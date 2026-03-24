@@ -51,7 +51,7 @@ export default function CorrChart({ history, loading }: Props) {
       <div className="flex items-center justify-between">
         <p className="text-sm font-semibold text-zinc-900">
           훅점수 상관계수 추이
-          <span className="ml-2 text-xs font-normal text-zinc-400">(훅점수 ↔ 조회수)</span>
+          <span className="ml-2 text-xs font-normal text-zinc-400">(스피어만 순위 상관계수: 훅점수 ↔ 조회수)</span>
         </p>
         {loading && (
           <span className="text-xs text-blue-500 animate-pulse">실시간 업데이트 중…</span>
@@ -177,7 +177,7 @@ export default function CorrChart({ history, loading }: Props) {
               {" "}({(valid[valid.length - 1]! - valid[valid.length - 2]!).toFixed(3)})
             </span>
           )}
-          <span className="text-zinc-400">|0.5| 이상이면 W가 잘 작동하는 수준</span>
+          <span className="text-zinc-400">스피어만 순위 상관계수 · |0.5| 이상이면 W가 잘 작동</span>
         </div>
       )}
     </div>
