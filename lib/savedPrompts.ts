@@ -1,5 +1,4 @@
-export const SAVED_PROMPTS_KEY = "mozaic:savedPrompts";
-export const MAX_SAVED_PROMPTS = 20;
+import { supabase } from "@/lib/supabase";
 
 export type SavedPrompt = {
   id: string;
@@ -8,42 +7,46 @@ export type SavedPrompt = {
   savedAt: string; // ISO
 };
 
-export function loadSavedPrompts(): SavedPrompt[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(SAVED_PROMPTS_KEY);
-    if (!raw) return [];
-    return JSON.parse(raw) as SavedPrompt[];
-  } catch {
-    return [];
-  }
+export async function loadSavedPrompts(): Promise<SavedPrompt[]> {
+  const { data, error } = await supabase
+    .from("saved_prompts")
+    .select("id, name, prompt, saved_at")
+    .order("saved_at", { ascending: false })
+    .limit(50);
+  if (error || !data) return [];
+  return data.map((r) => ({
+    id: String(r.id),
+    name: String(r.name),
+    prompt: String(r.prompt),
+    savedAt: String(r.saved_at),
+  }));
 }
 
-export function savePrompt(name: string, prompt: string): SavedPrompt[] {
-  const list = loadSavedPrompts();
-  const entry: SavedPrompt = {
-    id: `sp_${Date.now()}`,
-    name: name.trim() || `W_${new Date().toLocaleString("ko-KR")}`,
-    prompt,
-    savedAt: new Date().toISOString(),
-  };
-  const next = [entry, ...list].slice(0, MAX_SAVED_PROMPTS);
-  localStorage.setItem(SAVED_PROMPTS_KEY, JSON.stringify(next));
-  return next;
+export async function savePrompt(name: string, prompt: string): Promise<SavedPrompt[]> {
+  const entryName = name.trim() || `W_${new Date().toLocaleString("ko-KR")}`;
+  const { error } = await supabase
+    .from("saved_prompts")
+    .insert({ name: entryName, prompt });
+  if (error) throw new Error(error.message);
+  return loadSavedPrompts();
 }
 
-export function deletePrompt(id: string): SavedPrompt[] {
-  const next = loadSavedPrompts().filter((p) => p.id !== id);
-  localStorage.setItem(SAVED_PROMPTS_KEY, JSON.stringify(next));
-  return next;
+export async function deletePrompt(id: string): Promise<SavedPrompt[]> {
+  const { error } = await supabase
+    .from("saved_prompts")
+    .delete()
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  return loadSavedPrompts();
 }
 
-export function renamePrompt(id: string, newName: string): SavedPrompt[] {
+export async function renamePrompt(id: string, newName: string): Promise<SavedPrompt[]> {
   const trimmed = newName.trim();
   if (!trimmed) return loadSavedPrompts();
-  const next = loadSavedPrompts().map((p) =>
-    p.id === id ? { ...p, name: trimmed } : p
-  );
-  localStorage.setItem(SAVED_PROMPTS_KEY, JSON.stringify(next));
-  return next;
+  const { error } = await supabase
+    .from("saved_prompts")
+    .update({ name: trimmed })
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  return loadSavedPrompts();
 }

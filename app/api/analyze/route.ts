@@ -19,10 +19,10 @@ class ApiError extends Error {
   }
 }
 
-const optimizeSystemPrompt = `
-You are a precise JSON generator.
-Return valid raw JSON only.
-`;
+const optimizeSystemPrompt = `You are a precise JSON generator.
+Return ONLY valid raw JSON — no markdown, no code fences, no explanation outside the JSON.
+CRITICAL: In JSON string values, use \\n for line breaks instead of actual newlines.
+All string fields must be on a single logical line (escaped \\n allowed, literal newline inside a string value is forbidden).`;
 
 const RESPONSE_FORMAT_INSTRUCTION = `
 위의 분석 기준으로 평가한 뒤, 반드시 아래 JSON 형식으로만 응답하세요.
@@ -195,6 +195,192 @@ async function callGemini(system: string, user: string, model: GeminiModel = "ge
   return json.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 }
 
+type ScoreRow = { id: string; score: number; verdict: string };
+
+const BATCH_SCORE_ITEM_SCHEMA = {
+  type: "object",
+  properties: {
+    id:      { type: "string" },
+    score:   { type: "number" },
+    verdict: { type: "string" },
+  },
+  required: ["id", "score", "verdict"],
+} as const;
+
+/** Claude tool_use로 배열 채점 결과를 직접 추출 — 파싱 실패 없음 */
+async function callClaudeBatchScore(
+  system: string,
+  user: string,
+  model: string
+): Promise<ScoreRow[]> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new ApiError("ANTHROPIC_API_KEY가 설정되지 않았습니다.", 500);
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 4000,
+      system,
+      messages: [{ role: "user", content: user }],
+      tools: [{
+        name: "submit_scores",
+        description: "모든 영상의 채점 결과를 배열로 반환합니다",
+        input_schema: {
+          type: "object",
+          properties: {
+            scores: { type: "array", items: BATCH_SCORE_ITEM_SCHEMA },
+          },
+          required: ["scores"],
+        },
+      }],
+      tool_choice: { type: "tool", name: "submit_scores" },
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new ApiError(`Anthropic 오류: ${res.status}`, 502, text);
+  }
+  const json = (await res.json()) as { content?: Array<{ type: string; input?: { scores?: unknown } }> };
+  const toolUse = json.content?.find((c) => c.type === "tool_use");
+  const scores = toolUse?.input?.scores;
+  return Array.isArray(scores) ? (scores as ScoreRow[]) : [];
+}
+
+/** Gemini responseSchema로 배열 채점 결과를 직접 추출 — 파싱 실패 없음 */
+async function callGeminiBatchScore(
+  system: string,
+  user: string,
+  model: GeminiModel
+): Promise<ScoreRow[]> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new ApiError("GEMINI_API_KEY가 설정되지 않았습니다.", 500);
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: user }] }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: { type: "array", items: BATCH_SCORE_ITEM_SCHEMA },
+        },
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new ApiError(`Gemini 오류: ${res.status}`, 502, text);
+  }
+  const json = await res.json() as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  };
+  const raw = json.candidates?.[0]?.content?.parts?.[0]?.text ?? "[]";
+  const parsed = safeParse<ScoreRow[]>(raw);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+const OPTIMIZE_RESULT_SCHEMA = {
+  type: "object",
+  properties: {
+    diagnosis:         { type: "string" },
+    weak_items:        { type: "string" },
+    missing_factors:   { type: "string" },
+    weight_suggestion: { type: "string" },
+    prompt:            { type: "string" },
+    changes:           { type: "string" },
+    version:           { type: "string" },
+  },
+  required: ["diagnosis", "weak_items", "missing_factors", "weight_suggestion", "prompt", "changes", "version"],
+} as const;
+
+/** Claude tool_use로 OptimizeResult를 직접 추출 — 파싱 실패 없음 */
+async function callClaudeOptimize(user: string): Promise<OptimizeResult> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new ApiError("ANTHROPIC_API_KEY가 설정되지 않았습니다.", 500);
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 8000,
+      system: "당신은 숏폼 영상 분석 프롬프트를 최적화하는 메타 엔지니어입니다. 반드시 optimize_w_prompt 툴을 호출하여 결과를 반환하세요.",
+      messages: [{ role: "user", content: user }],
+      tools: [{
+        name: "optimize_w_prompt",
+        description: "최적화된 W 프롬프트와 진단 결과를 반환합니다",
+        input_schema: OPTIMIZE_RESULT_SCHEMA,
+      }],
+      tool_choice: { type: "tool", name: "optimize_w_prompt" },
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new ApiError(`Anthropic 오류: ${res.status}`, 502, text);
+  }
+  const json = (await res.json()) as { content?: Array<{ type: string; input?: Record<string, unknown> }> };
+  const toolUse = json.content?.find((c) => c.type === "tool_use");
+  if (!toolUse?.input) throw new ApiError("Claude tool_use 결과가 없습니다.", 500);
+  const result = toolUse.input as OptimizeResult;
+  if (typeof result.prompt !== "string" || !result.prompt.trim()) {
+    throw new ApiError("최적화 결과에 prompt 필드가 없습니다. 다시 시도해주세요.", 500);
+  }
+  return result;
+}
+
+/** Gemini responseSchema로 OptimizeResult를 직접 추출 — 파싱 실패 없음 */
+async function callGeminiOptimize(user: string, model: GeminiModel): Promise<OptimizeResult> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new ApiError("GEMINI_API_KEY가 설정되지 않았습니다.", 500);
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: "당신은 숏폼 영상 분석 프롬프트를 최적화하는 메타 엔지니어입니다." }] },
+        contents: [{ role: "user", parts: [{ text: user }] }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: OPTIMIZE_RESULT_SCHEMA,
+        },
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new ApiError(`Gemini 오류: ${res.status}`, 502, text);
+  }
+  const json = await res.json() as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  };
+  const raw = json.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  const parsed = safeParse<OptimizeResult>(raw);
+  if (!parsed) throw new ApiError("Gemini 구조화 출력 파싱 실패", 500);
+  if (typeof parsed.prompt !== "string" || !parsed.prompt.trim()) {
+    throw new ApiError("최적화 결과에 prompt 필드가 없습니다. 다시 시도해주세요.", 500);
+  }
+  return parsed;
+}
+
 async function callClaude(system: string, user: string, model = "claude-sonnet-4-6") {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -211,7 +397,7 @@ async function callClaude(system: string, user: string, model = "claude-sonnet-4
     },
     body: JSON.stringify({
       model,
-      max_tokens: 4000,
+      max_tokens: 8000,
       system,
       messages: [{ role: "user", content: user }],
     }),
@@ -336,12 +522,11 @@ ${rowLines}`;
       const useGemini = body.ai === "gemini";
       const geminiModel = resolveGeminiModel(body.scoringModel ?? body.geminiVersion);
       const claudeModel = body.scoringModel === "haiku" ? "claude-haiku-4-5-20251001" : "claude-sonnet-4-6";
-      const batchText = useGemini
-        ? await callGemini(batchSystem, batchUser, geminiModel)
-        : await callClaude(batchSystem, batchUser, claudeModel);
-
-      const parsed = safeParse<Array<{ id: string; score: number; verdict: string }>>(batchText);
-      return NextResponse.json(parsed ?? [], { status: 200 });
+      // tool_use / responseSchema로 배열 결과 보장 — safeParse 의존 제거
+      const scored = useGemini
+        ? await callGeminiBatchScore(batchSystem, batchUser, geminiModel)
+        : await callClaudeBatchScore(batchSystem, batchUser, claudeModel);
+      return NextResponse.json(scored, { status: 200 });
     }
 
     if (body.mode === "optimize") {
@@ -359,27 +544,11 @@ ${rowLines}`;
       const user = buildOptimizeUserPrompt(history, correlation, currentW);
       const useGemini = body.ai === "gemini";
       const geminiModel = resolveGeminiModel(body.geminiVersion);
-      const text = useGemini
-        ? await callGemini(optimizeSystemPrompt, user, geminiModel)
-        : await callClaude(optimizeSystemPrompt, user);
-      console.log("[/api/analyze] optimize raw response", text?.slice(0, 500));
-      const parsed = safeParse<OptimizeResult>(text);
-      if (!parsed) {
-        return NextResponse.json(
-          {
-            diagnosis: "W 출력 파싱에 실패했습니다. JSON 구조를 더 엄격히 강제해야 합니다.",
-            weak_items: "사회적매력, 불확실성 항목에서 성과 예측 불일치가 큽니다.",
-            missing_factors: "초기 시선고정력, 정보 비대칭 신호를 기존 항목에 통합 필요",
-            weight_suggestion: "생존 0.35 / 번식 0.25 / 감정 0.40 재검토",
-            prompt:
-              "당신은 숏폼 3초 훅 분석기다. 기존 9개 항목으로 채점하되 이유를 한국어로 간결히 작성하라.",
-            changes: "판정 경계 재조정, 감정 가중치 상향, 불확실성 정의 명확화",
-            version: "W1",
-          },
-          { status: 200 }
-        );
-      }
-      return NextResponse.json(parsed);
+      // tool_use / responseSchema 방식으로 파싱 실패 원천 차단
+      const result = useGemini
+        ? await callGeminiOptimize(user, geminiModel)
+        : await callClaudeOptimize(user);
+      return NextResponse.json(result);
     }
 
     const textInput = String(body.text ?? "").trim();

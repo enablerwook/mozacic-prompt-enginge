@@ -7,8 +7,8 @@ import { toSubscript, W_VERSION_STORAGE_KEY } from "@/lib/wPrompt";
 
 const menus = [
   { href: "/history", label: "히스토리" },
-  { href: "/optimize", label: "최적화" },
-  { href: "/analyze", label: "단일 테스트" },
+  { href: "/optimize", label: "후킹 최적화" },
+  { href: "/analyze", label: "후킹 테스트" },
 ];
 
 export default function Sidebar() {

@@ -120,3 +120,10 @@ body {
   width: 1.171rem;
   height: 1.171rem;
 }
+
+/* 폭죽 파티클 애니메이션 */
+@keyframes confetti-fall {
+  0%   { transform: translateY(-12px) rotate(0deg) scaleX(1);   opacity: 1; }
+  70%  { opacity: 1; }
+  100% { transform: translateY(105vh) rotate(660deg) scaleX(0.6); opacity: 0; }
+}

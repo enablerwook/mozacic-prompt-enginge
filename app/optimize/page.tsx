@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import MockDataTable from "@/components/optimize/MockDataTable";
 import PromptDiffView from "@/components/optimize/PromptDiffView";
+import CorrChart from "@/components/optimize/CorrChart";
 import { MOCK_BASE_W, MOCK_NEW_W, type MockMozaicRow } from "@/lib/mockMozaicData";
 import {
   buildOptimizeHistoryLine,
@@ -42,9 +43,13 @@ export default function OptimizePage() {
   const abortRef = useRef<AbortController | null>(null);
   // 캐시: wPromptKey → Map<rowId, HookScoreEntry>
   const scoreCacheRef = useRef<Map<string, Map<string, HookScoreEntry>>>(new Map());
-  const [currentRound, setCurrentRound] = useState<number | null>(null);
-  const [scoreProgress, setScoreProgress] = useState<{ current: number; total: number } | null>(null);
-  const [phase, setPhase] = useState<"scoring" | "optimizing" | null>(null);
+  const [totalProgress, setTotalProgress] = useState<{ current: number; total: number; label: string } | null>(null);
+  const [hookCorrHistory, setHookCorrHistory] = useState<(number | null)[]>([]);
+  const [showConfetti, setShowConfetti] = useState(false);
+  const [confettiParticles, setConfettiParticles] = useState<Array<{
+    id: number; left: number; delay: number; duration: number; color: string; width: number; height: number;
+  }>>([]);
+  const prevResultRef = useRef<OptimizeResult | null>(null);
   const [runMeta, setRunMeta] = useState<{
     ai: string;
     dataCount: number;
@@ -63,11 +68,31 @@ export default function OptimizePage() {
   }
 
   useEffect(() => {
-    // W 프롬프트 초기 로드
     const stored = localStorage.getItem(W_PROMPT_STORAGE_KEY);
     setCurrentW(stored?.trim() ? stored : ANALYSIS_SYSTEM_PROMPT);
-    setSavedPrompts(loadSavedPrompts());
+    void loadSavedPrompts().then(setSavedPrompts);
   }, []);
+
+  const CONFETTI_COLORS = ["#ff6b6b","#feca57","#48dbfb","#ff9ff3","#54a0ff","#5f27cd","#00d2d3","#ff9f43","#1dd1a1","#ee5a24"];
+
+  useEffect(() => {
+    if (!result || result === prevResultRef.current) return;
+    prevResultRef.current = result;
+    const particles = Array.from({ length: 60 }, (_, i) => ({
+      id: i,
+      left: Math.random() * 98,
+      delay: Math.random() * 0.6,
+      duration: 1.3 + Math.random() * 0.7,
+      color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+      width: 6 + Math.floor(Math.random() * 7),
+      height: 4 + Math.floor(Math.random() * 5),
+    }));
+    setConfettiParticles(particles);
+    setShowConfetti(true);
+    const t = setTimeout(() => setShowConfetti(false), 2000);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result]);
 
   useEffect(() => {
     async function load() {
@@ -83,20 +108,20 @@ export default function OptimizePage() {
     void load();
   }, []);
 
-  const handleSavePrompt = useCallback(() => {
+  const handleSavePrompt = useCallback(async () => {
     if (!currentW.trim()) return;
-    const next = savePrompt(saveNameInput, currentW);
+    const next = await savePrompt(saveNameInput, currentW);
     setSavedPrompts(next);
     setSaveNameInput("");
     setShowSaved(true);
   }, [currentW, saveNameInput]);
 
-  const handleDeletePrompt = useCallback((id: string) => {
-    setSavedPrompts(deletePrompt(id));
+  const handleDeletePrompt = useCallback(async (id: string) => {
+    setSavedPrompts(await deletePrompt(id));
   }, []);
 
-  const handleRenamePrompt = useCallback((id: string, newName: string) => {
-    setSavedPrompts(renamePrompt(id, newName));
+  const handleRenamePrompt = useCallback(async (id: string, newName: string) => {
+    setSavedPrompts(await renamePrompt(id, newName));
   }, []);
 
   const handleLoadPrompt = useCallback((p: SavedPrompt) => {
@@ -125,7 +150,8 @@ export default function OptimizePage() {
   async function scoreRows(
     rowsToScore: typeof targetRows,
     wPrompt: string | null,
-    abort: AbortController
+    abort: AbortController,
+    onProgress?: (current: number, total: number) => void
   ): Promise<Map<string, HookScoreEntry>> {
     const BATCH_SIZE = 20;
     const MAX_PARALLEL = 5;
@@ -143,7 +169,7 @@ export default function OptimizePage() {
       for (let i = 0; i < uncachedRows.length; i += BATCH_SIZE) {
         batches.push(uncachedRows.slice(i, i + BATCH_SIZE));
       }
-      setScoreProgress({ current: cached.size, total: rowsToScore.length });
+      onProgress?.(cached.size, rowsToScore.length);
 
       let scoredCount = cached.size;
       for (let bi = 0; bi < batches.length; bi += MAX_PARALLEL) {
@@ -185,14 +211,14 @@ export default function OptimizePage() {
               if ((e as Error).name === "AbortError") return;
             }
             scoredCount += batch.length;
-            setScoreProgress({ current: Math.min(scoredCount, rowsToScore.length), total: rowsToScore.length });
+            onProgress?.(Math.min(scoredCount, rowsToScore.length), rowsToScore.length);
           })
         );
       }
       scoreCacheRef.current.set(wCacheKey, new Map(scoreMap));
     }
 
-    setScoreProgress(null);
+    onProgress?.(rowsToScore.length, rowsToScore.length);
     return scoreMap;
   }
 
@@ -202,13 +228,17 @@ export default function OptimizePage() {
     setMessage("");
     setResult(null);
     setRunMeta(null);
-    setScoreProgress(null);
-    setPhase(null);
+    setTotalProgress(null);
+    setHookCorrHistory([]);
 
     const abort = new AbortController();
     abortRef.current = abort;
 
     const rounds = Math.max(1, Math.min(repeatCount, 10));
+    // Total steps: each round has (targetRows.length scoring steps) + 1 optimization step
+    const totalSteps = rounds * (targetRows.length + 1);
+    let completedSteps = 0;
+
     let iterW = currentW.trim() || null;
     let lastResult: OptimizeResult | null = null;
     let lastHookCorr: number | null = null;
@@ -216,12 +246,22 @@ export default function OptimizePage() {
     try {
       for (let i = 1; i <= rounds; i++) {
         if (abort.signal.aborted) break;
-        setCurrentRound(i);
 
         // ── 채점: 현재 iterW로 모든 행 채점 ────────────────────────
-        setPhase("scoring");
-        const scoreMap = await scoreRows(targetRows, iterW, abort);
+        const baseForRound = completedSteps;
+        setTotalProgress({ current: baseForRound, total: totalSteps, label: `${i}/${rounds}회차 채점 중` });
+        const scoreMap = await scoreRows(
+          targetRows, iterW, abort,
+          (scored) => {
+            setTotalProgress({
+              current: baseForRound + scored,
+              total: totalSteps,
+              label: `${i}/${rounds}회차 채점 중 — ${scored}/${targetRows.length}건`,
+            });
+          }
+        );
         if (abort.signal.aborted) break;
+        completedSteps += targetRows.length;
 
         // ── 상관계수 계산 ───────────────────────────────────────────
         const scoredRows = targetRows.filter((r) => scoreMap.has(r.id));
@@ -230,12 +270,33 @@ export default function OptimizePage() {
         lastHookCorr = scoredRows.length >= 2
           ? pearsonCorrelation(hookScores, viewCounts)
           : null;
+        setHookCorrHistory((prev) => [...prev, lastHookCorr]);
 
         // ── 최적화: 채점 결과로 W 개선 ─────────────────────────────
-        setPhase("optimizing");
-        const historyLines = targetRows.map((r) =>
+        setTotalProgress({ current: completedSteps, total: totalSteps, label: `${i}/${rounds}회차 최적화 중…` });
+
+        // 502 방지: historyLines를 최대 40행으로 제한 (판별력 높은 행 우선)
+        const MAX_HISTORY_ROWS = 40;
+        let historyRows = targetRows;
+        if (targetRows.length > MAX_HISTORY_ROWS) {
+          const sortedByScore = [...targetRows].sort(
+            (a, b) => (scoreMap.get(b.id)?.score ?? 0) - (scoreMap.get(a.id)?.score ?? 0)
+          );
+          const sortedByViews = [...targetRows].sort((a, b) => b.views - a.views);
+          const scoreRank = new Map(sortedByScore.map((r, idx) => [r.id, idx]));
+          const viewsRank = new Map(sortedByViews.map((r, idx) => [r.id, idx]));
+          historyRows = [...targetRows]
+            .sort(
+              (a, b) =>
+                Math.abs((scoreRank.get(b.id) ?? 0) - (viewsRank.get(b.id) ?? 0)) -
+                Math.abs((scoreRank.get(a.id) ?? 0) - (viewsRank.get(a.id) ?? 0))
+            )
+            .slice(0, MAX_HISTORY_ROWS);
+        }
+        const historyLines = historyRows.map((r) =>
           buildOptimizeHistoryLine(r, optimizeFields, asOfHistory, scoreMap)
         );
+
         const res = await fetch("/api/analyze", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -251,13 +312,18 @@ export default function OptimizePage() {
             },
           }),
         });
-        const data = await res.json();
+        const data = await res.json() as OptimizeResult & { error?: string };
         if (!res.ok) {
-          setMessage(data.error || "최적화 실패");
-          return;
+          // 이 회차는 실패 — 에러를 메시지에 기록하고 다음 회차로 계속
+          setMessage(`${i}회차 최적화 실패: ${data.error ?? "알 수 없는 오류"}`);
+          completedSteps += 1;
+          setTotalProgress({ current: completedSteps, total: totalSteps, label: `${i}/${rounds}회차 실패 (건너뜀)` });
+          continue;
         }
-        lastResult = data as OptimizeResult;
-        iterW = lastResult.prompt.trim() || iterW;
+        lastResult = data;
+        iterW = lastResult.prompt?.trim() || iterW;
+        completedSteps += 1;
+        setTotalProgress({ current: completedSteps, total: totalSteps, label: `${i}/${rounds}회차 완료` });
       }
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
@@ -265,9 +331,7 @@ export default function OptimizePage() {
       }
     } finally {
       setLoading(false);
-      setCurrentRound(null);
-      setPhase(null);
-      setScoreProgress(null);
+      setTotalProgress(null);
     }
 
     if (abort.signal.aborted) {
@@ -297,6 +361,26 @@ export default function OptimizePage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
+      {/* 폭죽 오버레이 */}
+      {showConfetti && (
+        <div className="pointer-events-none fixed inset-0 z-50 overflow-hidden">
+          {confettiParticles.map((p) => (
+            <div
+              key={p.id}
+              style={{
+                position: "absolute",
+                left: `${p.left}%`,
+                top: "-12px",
+                width: `${p.width}px`,
+                height: `${p.height}px`,
+                backgroundColor: p.color,
+                borderRadius: "2px",
+                animation: `confetti-fall ${p.duration}s ${p.delay}s ease-in both`,
+              }}
+            />
+          ))}
+        </div>
+      )}
       <section className="card space-y-3 p-5">
         <h2 className="text-lg font-semibold text-zinc-900">현재 W (분석 프롬프트)</h2>
         <p className="text-xs text-zinc-500">
@@ -315,12 +399,12 @@ export default function OptimizePage() {
             placeholder="저장 이름 (비워두면 자동 생성)"
             value={saveNameInput}
             onChange={(e) => setSaveNameInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSavePrompt()}
+            onKeyDown={(e) => { if (e.key === "Enter") void handleSavePrompt(); }}
           />
           <button
             type="button"
             className="btn text-sm"
-            onClick={handleSavePrompt}
+            onClick={() => void handleSavePrompt()}
             disabled={!currentW.trim()}
           >
             💾 저장
@@ -456,11 +540,24 @@ export default function OptimizePage() {
             <p className="text-xs text-zinc-400">조회수 &gt; 0</p>
           </div>
           <div className="card p-4">
-            <p className="text-xs text-zinc-500">상관계수</p>
-            <p className="mt-1 text-xl font-semibold text-zinc-900">
-              {stats.corr === null ? "—" : stats.corr.toFixed(3)}
-            </p>
-            <p className="text-xs text-zinc-400">좋아요율 ↔ 조회수</p>
+            <p className="text-xs text-zinc-500">훅점수 상관계수</p>
+            {(() => {
+              const latest = hookCorrHistory.length > 0
+                ? hookCorrHistory[hookCorrHistory.length - 1]
+                : null;
+              return (
+                <>
+                  <p className={`mt-1 text-xl font-semibold ${latest != null ? "text-zinc-900" : "text-zinc-400"}`}>
+                    {latest != null ? latest.toFixed(3) : "—"}
+                  </p>
+                  <p className="text-xs text-zinc-400">훅점수 ↔ 조회수</p>
+                  <p className="mt-1.5 text-xs text-zinc-400 border-t border-zinc-100 pt-1.5">
+                    기준선 {stats.corr !== null ? stats.corr.toFixed(3) : "—"}
+                    <span className="ml-1 text-zinc-300">(좋아요율↔조회수)</span>
+                  </p>
+                </>
+              );
+            })()}
           </div>
           <div className="card p-4">
             <p className="text-xs text-zinc-500">포함 필드 수</p>
@@ -470,22 +567,36 @@ export default function OptimizePage() {
         </div>
       </div>
 
-      {loading && scoreProgress && (
+      {loading && (
         <div className="space-y-1">
           <div className="flex items-center justify-between text-xs text-zinc-500">
             <span>
-              {currentRound !== null ? `${currentRound}/${Math.max(1, Math.min(repeatCount, 10))}회차 ` : ""}채점 중 — {scoreProgress.current}/{scoreProgress.total}건
-              {fastScoring && <span className="ml-1 text-blue-500">({aiModel === "gemini" ? "2.0-flash" : "Haiku"})</span>}
+              {totalProgress?.label ?? "준비 중…"}
+              {fastScoring && totalProgress?.label?.includes("채점") && (
+                <span className="ml-1 text-blue-500">({aiModel === "gemini" ? "2.0-flash" : "Haiku"})</span>
+              )}
             </span>
-            <span>{Math.round((scoreProgress.current / scoreProgress.total) * 100)}%</span>
+            <span>
+              {totalProgress && totalProgress.total > 0
+                ? `${Math.round((totalProgress.current / totalProgress.total) * 100)}%`
+                : ""}
+            </span>
           </div>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-200">
-            <div
-              className="h-full rounded-full bg-blue-500 transition-[width] duration-150"
-              style={{ width: `${Math.round((scoreProgress.current / scoreProgress.total) * 100)}%` }}
-            />
+            {totalProgress && totalProgress.total > 0 ? (
+              <div
+                className="h-full rounded-full bg-blue-500 transition-[width] duration-150"
+                style={{ width: `${Math.round((totalProgress.current / totalProgress.total) * 100)}%` }}
+              />
+            ) : (
+              <div className="h-full w-full animate-pulse rounded-full bg-blue-300" />
+            )}
           </div>
         </div>
+      )}
+
+      {(hookCorrHistory.length > 0 || loading) && (
+        <CorrChart history={hookCorrHistory} loading={loading} />
       )}
 
       {result && (
