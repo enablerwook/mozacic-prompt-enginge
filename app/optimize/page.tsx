@@ -153,8 +153,12 @@ export default function OptimizePage() {
     abort: AbortController,
     onProgress?: (current: number, total: number) => void
   ): Promise<Map<string, HookScoreEntry>> {
+    // ── 설정값 ──────────────────────────────────────────────────────────────
+    // BATCH_SIZE: LLM 1회 호출로 채점할 최대 행 수 (너무 크면 응답 품질 저하)
     const BATCH_SIZE = 20;
-    const MAX_PARALLEL = 5;
+    // MAX_CONCURRENT: 동시에 날릴 LLM API 요청 수 (Rate Limit 안전선)
+    const MAX_CONCURRENT = 5;
+
     const scoringModel = fastScoring
       ? (aiModel === "gemini" ? "gemini-2.0-flash" : "haiku")
       : undefined;
@@ -165,6 +169,7 @@ export default function OptimizePage() {
     const uncachedRows = rowsToScore.filter((r) => !cached.has(r.id));
 
     if (uncachedRows.length > 0) {
+      // 전체 행을 BATCH_SIZE 단위 배치로 분할
       const batches: (typeof uncachedRows)[] = [];
       for (let i = 0; i < uncachedRows.length; i += BATCH_SIZE) {
         batches.push(uncachedRows.slice(i, i + BATCH_SIZE));
@@ -172,49 +177,65 @@ export default function OptimizePage() {
       onProgress?.(cached.size, rowsToScore.length);
 
       let scoredCount = cached.size;
-      for (let bi = 0; bi < batches.length; bi += MAX_PARALLEL) {
-        if (abort.signal.aborted) break;
-        const chunk = batches.slice(bi, bi + MAX_PARALLEL);
-        await Promise.all(
-          chunk.map(async (batch) => {
-            if (abort.signal.aborted) return;
-            try {
-              const res = await fetch("/api/analyze", {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                signal: abort.signal,
-                body: JSON.stringify({
-                  mode: "batch-score",
-                  ai: aiModel,
-                  geminiVersion,
-                  scoringModel,
-                  payload: {
-                    systemPrompt: wPrompt ?? undefined,
-                    rows: batch.map((r) => ({
-                      id: r.id,
-                      text: [r.title, r.description].filter(Boolean).join(" | "),
-                      views: r.views,
-                      likes: r.likes,
-                    })),
-                  },
-                }),
-              });
-              if (res.ok) {
-                const results = await res.json() as Array<{ id: string; score?: number; verdict?: string }>;
-                for (const d of results) {
-                  if (typeof d.score === "number") {
-                    scoreMap.set(d.id, { score: d.score, verdict: d.verdict ?? "-" });
-                  }
+
+      // ── 워커 풀(Worker Pool) 패턴 ────────────────────────────────────────
+      // 기존: 청크 단위 순차 대기 → 한 청크가 끝나야 다음 청크 시작 (빈 슬롯 발생)
+      // 개선: MAX_CONCURRENT 개의 워커가 큐에서 배치를 하나씩 꺼내 처리
+      //       → 한 요청이 끝나는 즉시 다음 배치를 가져가 항상 슬롯이 꽉 찬 상태 유지
+      let nextIdx = 0; // 다음에 처리할 배치 인덱스 (워커 간 공유)
+
+      async function worker() {
+        // 남은 배치가 없거나 중단 신호가 오면 워커 종료
+        while (nextIdx < batches.length && !abort.signal.aborted) {
+          const batchIdx = nextIdx++; // 원자적으로 인덱스 선점
+          const batch = batches[batchIdx];
+
+          try {
+            const res = await fetch("/api/analyze", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              signal: abort.signal,
+              body: JSON.stringify({
+                mode: "batch-score",
+                ai: aiModel,
+                geminiVersion,
+                scoringModel,
+                payload: {
+                  systemPrompt: wPrompt ?? undefined,
+                  rows: batch.map((r) => ({
+                    id: r.id,
+                    text: [r.title, r.description].filter(Boolean).join(" | "),
+                    views: r.views,
+                    likes: r.likes,
+                  })),
+                },
+              }),
+            });
+            if (res.ok) {
+              const results = await res.json() as Array<{ id: string; score?: number; verdict?: string }>;
+              for (const d of results) {
+                if (typeof d.score === "number") {
+                  scoreMap.set(d.id, { score: d.score, verdict: d.verdict ?? "-" });
                 }
               }
-            } catch (e) {
-              if ((e as Error).name === "AbortError") return;
             }
-            scoredCount += batch.length;
-            onProgress?.(Math.min(scoredCount, rowsToScore.length), rowsToScore.length);
-          })
-        );
+          } catch (e) {
+            // AbortError는 사용자가 중지를 누른 것 → 조용히 종료
+            if ((e as Error).name === "AbortError") return;
+            // 그 외 네트워크 에러는 해당 배치만 건너뜀 (전체 중단 방지)
+          }
+
+          scoredCount += batch.length;
+          onProgress?.(Math.min(scoredCount, rowsToScore.length), rowsToScore.length);
+        }
       }
+
+      // MAX_CONCURRENT 개의 워커를 동시에 시작 → 모두 끝날 때까지 대기
+      // (배치 수가 MAX_CONCURRENT보다 적으면 배치 수만큼만 워커 생성)
+      await Promise.all(
+        Array.from({ length: Math.min(MAX_CONCURRENT, batches.length) }, worker)
+      );
+
       scoreCacheRef.current.set(wCacheKey, new Map(scoreMap));
     }
 
