@@ -509,9 +509,8 @@ export async function POST(req: Request) {
       ).join("\n");
 
       const batchSystem = `${wPrompt}\n\n당신은 위 기준으로 숏폼 영상을 채점하는 분석기입니다.`;
-      const batchUser = `아래 영상 목록 각각에 대해 위 기준으로 훅 점수(score)와 판정(verdict)을 계산하세요.
-score 규칙: s_total(0-10)×0.4 + r_total(0-10)×0.3 + e_total(0-10)×0.3, 소수점 1자리
-verdict: "강력한 훅"(≥6) / "보통 훅"(3-5.9) / "약한 훅"(1-2.9) / "훅 없음"(<1)
+      const batchUser = `아래 영상 목록 각각에 대해 위(시스템 프롬프트)에 정의된 기준과 점수 공식을 그대로 적용하여 훅 점수(score)와 판정(verdict)을 계산하세요.
+score와 verdict는 반드시 시스템 프롬프트의 기준을 따르세요. 별도 공식을 적용하지 마세요.
 
 반드시 JSON 배열로만 응답 (마크다운 금지):
 [{"id":"...","score":0.0,"verdict":"..."}]
