@@ -6,9 +6,9 @@ interface Props {
 }
 
 const colorMap = {
-  red: "linear-gradient(90deg,#ff3b5c,#ffd3dc)",
-  purple: "linear-gradient(90deg,#a855f7,#e9d5ff)",
-  yellow: "linear-gradient(90deg,#ffaa00,#ffe7b0)",
+  red: "linear-gradient(90deg,#2563eb,#93c5fd)",
+  purple: "linear-gradient(90deg,#475569,#94a3b8)",
+  yellow: "linear-gradient(90deg,#0ea5e9,#7dd3fc)",
 } as const;
 
 const labelMap: Record<string, string> = {
@@ -26,7 +26,7 @@ const labelMap: Record<string, string> = {
 export default function ScoreBars({ title, icon, color, items }: Props) {
   return (
     <div className="card p-5">
-      <h4 className="mb-4 text-sm font-semibold text-white">
+      <h4 className="mb-4 text-sm font-semibold text-zinc-900">
         <span className="mr-2">{icon}</span>
         {title}
       </h4>
@@ -38,11 +38,11 @@ export default function ScoreBars({ title, icon, color, items }: Props) {
               const width = Math.max(0, Math.min(100, safeValue * 10));
               return (
                 <>
-            <div className="mb-1 flex items-center justify-between text-xs text-[#e0e0e0]">
+            <div className="mb-1 flex items-center justify-between text-xs text-zinc-800">
               <span>{labelMap[item.name] ?? item.name}</span>
               <span>{safeValue}</span>
             </div>
-            <div className="h-[6px] rounded-full bg-[#23233a]">
+            <div className="h-[6px] rounded-full bg-zinc-200">
               <div
                 className="h-[6px] rounded-full"
                 aria-label={`${item.name}-progress`}
@@ -52,7 +52,7 @@ export default function ScoreBars({ title, icon, color, items }: Props) {
                 }}
               />
             </div>
-            <p className="mt-1 text-xs text-[#b0b0b0]">{item.reason}</p>
+            <p className="mt-1 text-xs text-zinc-600">{item.reason}</p>
                 </>
               );
             })()}

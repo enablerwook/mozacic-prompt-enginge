@@ -1,56 +1,63 @@
-@import "tailwindcss";
 @import url("https://cdn.jsdelivr.net/npm/pretendard/dist/web/static/pretendard.css");
 @import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&display=swap");
+
+@import "tailwindcss";
 
 @theme inline {
   --font-sans: "Pretendard", -apple-system, sans-serif;
 }
 
+/* 라이트 모드 도화지 (구글 문서 / 제미나이 화이트 톤) */
+html {
+  color-scheme: light;
+  background: #ffffff;
+}
+
 body {
   font-family: "Pretendard", -apple-system, sans-serif;
-  color: #e0e0e0;
-  background: #07070f;
+  color: #18181b;
+  background: #ffffff;
 }
 
 .card {
-  border: 1px solid #1a1a2e;
-  background: #0d0d1a;
+  border: 1px solid #e4e4e7;
+  background: #ffffff;
   border-radius: 14px;
 }
 
 .input {
   width: 100%;
   border-radius: 10px;
-  border: 1px solid #1a1a2e;
-  background: #101024;
+  border: 1px solid #e4e4e7;
+  background: #ffffff;
   padding: 0.7rem 0.8rem;
-  color: #e0e0e0;
+  color: #18181b;
 }
 
 .input:focus {
   outline: none;
-  box-shadow: 0 0 0 2px #2a2a48;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.22);
 }
 
 .btn {
   border-radius: 999px;
-  border: 1px solid #1a1a2e;
-  background: #15152b;
-  color: #e0e0e0;
+  border: 1px solid #e4e4e7;
+  background: #ffffff;
+  color: #27272a;
   padding: 0.65rem 0.9rem;
   font-size: 0.9rem;
 }
 
 .btn:hover {
-  background: #1c1c33;
+  background: #f4f4f5;
 }
 
 .text-muted {
-  color: #b0b0b0;
+  color: #52525b;
 }
 
 .text-disabled {
-  color: #555;
+  color: #a1a1aa;
 }
 
 .font-mono-ui {
@@ -59,28 +66,57 @@ body {
 
 .example-pill {
   border-radius: 999px;
-  border: 1px solid #1a1a2e;
-  background: #0d0d1a;
+  border: 1px solid #e4e4e7;
+  background: #fafafa;
   padding: 0.45rem 0.75rem;
   font-size: 0.78rem;
-  color: #b0b0b0;
+  color: #52525b;
 }
 
 .example-pill:hover {
-  border-color: #ff3b5c;
-  color: #e0e0e0;
+  border-color: rgba(37, 99, 235, 0.35);
+  color: #18181b;
 }
 
 .score-strong {
-  background: linear-gradient(90deg, #ff3b5c 0%, #ffffff 100%);
+  background: linear-gradient(90deg, #2563eb 0%, #18181b 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
 }
 
 .score-mid {
-  background: linear-gradient(90deg, #ffaa00 0%, #ffffff 100%);
+  background: linear-gradient(90deg, #64748b 0%, #18181b 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+}
+
+/* Mock 테이블: 라이트 모드 체크박스 · 구글 스타일 블루 선택 */
+.checkbox-mozaic {
+  appearance: none;
+  -webkit-appearance: none;
+  flex-shrink: 0;
+  cursor: pointer;
+  border: 2px solid #d4d4d8;
+  border-radius: 6px;
+  background-color: #ffffff;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.checkbox-mozaic:checked {
+  background-color: #2563eb;
+  border-color: #2563eb;
+}
+.checkbox-mozaic:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.45);
+  outline-offset: 2px;
+}
+/* 가로·세로 각 30% 축소 (×0.7) */
+.checkbox-mozaic-sm {
+  width: 1.025rem;
+  height: 1.025rem;
+}
+.checkbox-mozaic-md {
+  width: 1.171rem;
+  height: 1.171rem;
 }

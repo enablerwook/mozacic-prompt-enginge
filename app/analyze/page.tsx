@@ -1,463 +1,216 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import ScoreBars from "@/components/ScoreBars";
+import { useState, useEffect, useMemo } from "react";
+import MockDataTable from "@/components/optimize/MockDataTable";
 import { ANALYSIS_SYSTEM_PROMPT } from "@/lib/analyzer";
-import { supabase } from "@/lib/supabase";
-import { pearsonCorrelation } from "@/lib/stats";
+import { mockMozaicData, type MockMozaicRow } from "@/lib/mockMozaicData";
 import {
   toSubscript,
   W_PROMPT_STORAGE_KEY,
   W_VERSION_STORAGE_KEY,
 } from "@/lib/wPrompt";
-import { AnalyzeResult, DatasetRow } from "@/types";
 
-const EXAMPLES = [
-  "카메라가 흔들리며 누군가 '지금 도망가야 해'라고 속삭이는 장면",
-  "첫 2초에 전 애인이 결혼 소식을 말하고 주인공이 멈춰서는 장면",
-  "월급 통장이 0원이 된 화면을 클로즈업하며 시작",
-  "헬스장 입장 직후 모든 시선이 한 사람에게 쏠리는 장면",
-  "아이가 갑자기 울음을 멈추고 한 문장을 말하는 장면",
-  "면접관이 첫 질문 전에 이력서를 찢는 장면",
-];
+type MockSimRow = {
+  id: string;
+  description: string;
+  views: number | null;
+  score: number;
+  verdict: string;
+  summary: string;
+};
 
-function shorten(text: string, max = 28) {
+function shorten(text: string, max = 48) {
   if (text.length <= max) return text;
-  return `${text.slice(0, max)}...`;
+  return `${text.slice(0, max)}…`;
 }
 
-function verdictByScore(score: number) {
-  if (score >= 8) return "강력한 훅";
-  if (score >= 6) return "보통 훅";
-  if (score >= 3) return "약한 훅";
-  return "훅 없음";
+function formatViews(n: number) {
+  return new Intl.NumberFormat("ko-KR").format(n);
 }
 
-function parseGroundTruth(value?: string | null) {
-  if (!value) return null;
-  try {
-    return JSON.parse(value) as AnalyzeResult;
-  } catch {
-    return null;
-  }
-}
-
-function safeNum(value: unknown, fallback = 0) {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function safeText(value: unknown, fallback = "없음") {
-  if (typeof value === "string" && value.trim()) return value.trim();
-  return fallback;
+/** 프론트 전용: 행·프롬프트 길이 기준 안정적인 가짜 분석 결과 */
+function mockResultForRow(row: MockMozaicRow, prompt: string) {
+  const base = row.id.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
+  const p = prompt.length;
+  const score = Number((4.2 + ((base + p) % 45) / 10).toFixed(1));
+  const verdict =
+    score >= 8 ? "강한 훅" : score >= 6 ? "보통 훅" : score >= 4 ? "약한 훅" : "훅 약함 (시뮬)";
+  const summary = `「${shorten(row.description, 32)}」에 대한 Mock 요약 · 프롬프트 ${p}자 기준`;
+  return { score, verdict, summary };
 }
 
 export default function AnalyzePage() {
-  const [text, setText] = useState("");
-  const [views, setViews] = useState("");
-  const [likes, setLikes] = useState("");
-  const [comments, setComments] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<AnalyzeResult | null>(null);
-  const [message, setMessage] = useState("");
-  const [showReason, setShowReason] = useState(false);
-  const [showPromptEditor, setShowPromptEditor] = useState(false);
-  const [systemPrompt, setSystemPrompt] = useState(ANALYSIS_SYSTEM_PROMPT);
+  const [manualPrompt, setManualPrompt] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [wVersion, setWVersion] = useState(0);
   const [mounted, setMounted] = useState(false);
-  const [count, setCount] = useState(0);
-  const [rows, setRows] = useState<DatasetRow[]>([]);
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [reAnalyzing, setReAnalyzing] = useState(false);
-  const [progress, setProgress] = useState({ current: 0, total: 0 });
-  const [comparison, setComparison] = useState<{
-    beforeCorr: number | null;
-    afterCorr: number | null;
-    changes: Array<{
-      id: string;
-      description: string;
-      before: number | null;
-      after: number | null;
-      diff: number | null;
-      views: number | null;
-    }>;
-  } | null>(null);
 
-  const subElementCount = useMemo(() => {
-    return result?.disc_maps ? result.disc_maps.split(",").length : 0;
-  }, [result]);
+  const [simRunning, setSimRunning] = useState(false);
+  const [simProgress, setSimProgress] = useState({ current: 0, total: 0 });
+  const [mockResults, setMockResults] = useState<MockSimRow[] | null>(null);
 
   useEffect(() => {
-    const loadLocalState = () => {
-      const storedPrompt = localStorage.getItem(W_PROMPT_STORAGE_KEY);
-      const storedVersion = Number(localStorage.getItem(W_VERSION_STORAGE_KEY) ?? "0");
-      if (storedPrompt && storedPrompt.trim()) {
-        setSystemPrompt(storedPrompt);
-      }
-      if (!Number.isNaN(storedVersion)) {
-        setWVersion(storedVersion);
-      }
+    queueMicrotask(() => {
+      if (typeof window === "undefined") return;
+      const stored = localStorage.getItem(W_PROMPT_STORAGE_KEY);
+      const ver = Number(localStorage.getItem(W_VERSION_STORAGE_KEY) ?? "0");
+      if (stored?.trim()) setManualPrompt(stored);
+      else setManualPrompt(ANALYSIS_SYSTEM_PROMPT);
+      if (!Number.isNaN(ver)) setWVersion(ver);
       setMounted(true);
-    };
-    loadLocalState();
+    });
   }, []);
 
-  useEffect(() => {
-    async function loadRows() {
-      const { data, error } = await supabase
-        .from("datasets")
-        .select("*")
-        .order("created_at", { ascending: false });
-      if (error) {
-        setMessage(`데이터 로딩 실패: ${error.message}`);
-        return;
-      }
-      setRows((data ?? []) as DatasetRow[]);
-    }
-    void loadRows();
-  }, []);
+  const selectedRows = useMemo(
+    () => mockMozaicData.filter((r) => selectedIds.has(r.id)),
+    [selectedIds]
+  );
 
-  function applyPrompt() {
+  function loadStoredW() {
     if (typeof window === "undefined") return;
-    localStorage.setItem(W_PROMPT_STORAGE_KEY, systemPrompt);
-    localStorage.setItem(W_VERSION_STORAGE_KEY, String(wVersion));
-    setMessage(`W${toSubscript(wVersion)} 적용 완료`);
+    const stored = localStorage.getItem(W_PROMPT_STORAGE_KEY);
+    if (stored?.trim()) setManualPrompt(stored);
+    const ver = Number(localStorage.getItem(W_VERSION_STORAGE_KEY) ?? "0");
+    if (!Number.isNaN(ver)) setWVersion(ver);
   }
 
-  function restoreDefaultPrompt() {
-    if (typeof window === "undefined") return;
-    setSystemPrompt(ANALYSIS_SYSTEM_PROMPT);
+  function resetDefaultPrompt() {
+    setManualPrompt(ANALYSIS_SYSTEM_PROMPT);
     setWVersion(0);
-    localStorage.setItem(W_PROMPT_STORAGE_KEY, ANALYSIS_SYSTEM_PROMPT);
-    localStorage.setItem(W_VERSION_STORAGE_KEY, "0");
-    setMessage("기본 프롬프트 W₀로 복원했습니다.");
   }
 
-  async function analyze() {
-    if (!text.trim()) return;
-    setLoading(true);
-    setMessage("");
+  async function runSimulation() {
+    if (!manualPrompt.trim() || selectedRows.length === 0) return;
+    setMockResults(null);
+    setSimRunning(true);
+    const total = selectedRows.length;
+    setSimProgress({ current: 0, total });
 
-    const res = await fetch("/api/analyze", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        text,
-        views: views ? Number(views) : null,
-        likes: likes ? Number(likes) : null,
-        comments: comments ? Number(comments) : null,
-        systemPrompt,
-      }),
-    });
-    const data = await res.json();
-    setLoading(false);
+    const out: MockSimRow[] = [];
 
-    if (!res.ok) {
-      setMessage(data.detail ? `${data.error}\n${data.detail}` : data.error || "분석 실패");
-      return;
-    }
-
-    const normalized = {
-      ...data,
-      verdict: data.verdict ?? verdictByScore(data.score ?? 0),
-    } as AnalyzeResult;
-
-    setResult(normalized);
-    setCount((v) => v + 1);
-
-    const { error } = await supabase.from("datasets").insert({
-      title: text.slice(0, 48),
-      description: text,
-      views: views ? Number(views) : null,
-      likes: likes ? Number(likes) : null,
-      comments: comments ? Number(comments) : null,
-      viewer_sentiment: null,
-      ref_gemini: null,
-      ref_mozaic: null,
-      ref_claude: null,
-      ref_chatgpt: null,
-      ground_truth: JSON.stringify(normalized),
-    });
-
-    if (error) setMessage(`Supabase 저장 실패: ${error.message}`);
-    else {
-      setMessage("분석 및 저장 완료");
-      const { data } = await supabase
-        .from("datasets")
-        .select("*")
-        .order("created_at", { ascending: false });
-      setRows((data ?? []) as DatasetRow[]);
-    }
-  }
-
-  function calcCorrelation(targetRows: DatasetRow[]) {
-    const valid = targetRows
-      .map((row) => {
-        const parsed = parseGroundTruth(row.ground_truth);
-        return {
-          score: parsed?.score ?? null,
-          views: row.views ?? null,
-        };
-      })
-      .filter(
-        (item): item is { score: number; views: number } =>
-          typeof item.score === "number" && typeof item.views === "number"
-      );
-
-    return pearsonCorrelation(
-      valid.map((v) => v.score),
-      valid.map((v) => v.views)
-    );
-  }
-
-  async function runReanalyze() {
-    if (selectedIds.length === 0) return;
-    setReAnalyzing(true);
-    setComparison(null);
-
-    const targetRows = rows.filter((row) => selectedIds.includes(row.id));
-    const beforeCorr = calcCorrelation(rows);
-    const localRows = [...rows];
-    const changes: Array<{
-      id: string;
-      description: string;
-      before: number | null;
-      after: number | null;
-      diff: number | null;
-      views: number | null;
-    }> = [];
-
-    setProgress({ current: 0, total: targetRows.length });
-
-    for (let i = 0; i < targetRows.length; i += 1) {
-      const row = targetRows[i];
-      setProgress({ current: i + 1, total: targetRows.length });
-
-      const res = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          text: row.description ?? "",
-          views: row.views ?? null,
-          likes: row.likes ?? null,
-          comments: row.comments ?? null,
-          systemPrompt,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setMessage(
-          data?.detail
-            ? `재분석 실패: ${data.error}\n${data.detail}`
-            : `재분석 실패: ${data?.error || "알 수 없는 오류"}`
-        );
-        continue;
-      }
-
-      const newResult = {
-        ...data,
-        verdict: data.verdict ?? verdictByScore(data.score ?? 0),
-      } as AnalyzeResult;
-      const prevScore = parseGroundTruth(row.ground_truth)?.score ?? null;
-
-      await supabase
-        .from("datasets")
-        .update({ ground_truth: JSON.stringify(newResult) })
-        .eq("id", row.id);
-
-      const localIndex = localRows.findIndex((r) => r.id === row.id);
-      if (localIndex >= 0) {
-        localRows[localIndex] = {
-          ...localRows[localIndex],
-          ground_truth: JSON.stringify(newResult),
-        };
-      }
-
-      changes.push({
+    for (let i = 0; i < selectedRows.length; i += 1) {
+      const row = selectedRows[i];
+      setSimProgress({ current: i + 1, total });
+      await new Promise((r) => setTimeout(r, 280));
+      const m = mockResultForRow(row, manualPrompt);
+      out.push({
         id: row.id,
-        description: row.description ?? "",
-        before: prevScore,
-        after: newResult.score,
-        diff:
-          prevScore === null || typeof newResult.score !== "number"
-            ? null
-            : Number((newResult.score - prevScore).toFixed(1)),
-        views: row.views ?? null,
+        description: row.description,
+        views: row.views,
+        score: m.score,
+        verdict: m.verdict,
+        summary: m.summary,
       });
     }
 
-    const afterCorr = calcCorrelation(localRows);
-    setRows(localRows);
-    setComparison({ beforeCorr, afterCorr, changes });
-    setReAnalyzing(false);
-    setSelectedIds([]);
-    setMessage(
-      `재분석 완료! 상관계수: 이전 ${beforeCorr?.toFixed(3) ?? "N/A"} → 현재 ${
-        afterCorr?.toFixed(3) ?? "N/A"
-      }`
-    );
+    setMockResults(out);
+    setSimRunning(false);
   }
+
+  const canRun = manualPrompt.trim().length > 0 && selectedIds.size > 0 && !simRunning;
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
       <section className="card p-5">
-        <h1 className="text-2xl font-bold text-white">3초 훅 분석기</h1>
-        <p className="mt-2 text-sm text-[#b0b0b0]">
-          분석 횟수 {count} · 하위요소 수 {subElementCount} ·{" "}
-          {mounted ? `현재 W${toSubscript(wVersion)}` : "W 버전 로딩 중..."}
+        <h1 className="text-2xl font-bold text-zinc-900">단일 테스트</h1>
+        <p className="mt-2 text-sm text-zinc-600">
+          아래에 <span className="text-zinc-800">분석 프롬프트(W)</span>를 입력하고,{" "}
+          <span className="text-zinc-800">최적화 탭과 동일한 Mock 데이터 테이블</span>에서 행을 고른 뒤 실행합니다.
+          지금은 API 없이 <span className="text-blue-600">프론트 시뮬레이션</span>만 동작합니다.
+        </p>
+        <p className="mt-1 text-xs text-zinc-600">
+          {mounted ? `참고: 저장된 W 버전 W${toSubscript(wVersion)}` : "로딩 중…"}
         </p>
       </section>
 
-      <section className="card p-5">
-        <button
-          type="button"
-          className="text-sm text-[#e0e0e0]"
-          onClick={() => setShowPromptEditor((v) => !v)}
-        >
-          {showPromptEditor ? "▼" : "▶"} 현재 W 프롬프트 보기/수정
-        </button>
-        {showPromptEditor && (
-          <div className="mt-4 space-y-3">
-            <textarea
-              className="input min-h-64 font-mono-ui text-xs"
-              value={systemPrompt}
-              onChange={(e) => setSystemPrompt(e.target.value)}
-            />
-            <div className="flex gap-2">
-              <button type="button" className="btn" onClick={applyPrompt}>
-                W 적용
-              </button>
-              <button type="button" className="btn" onClick={restoreDefaultPrompt}>
-                기본값 복원
-              </button>
-            </div>
-          </div>
-        )}
-      </section>
-
-      <section className="card p-5">
-        <h3 className="text-lg font-semibold text-white">기존 데이터 재분석</h3>
-        <div className="mt-3 flex items-center gap-3">
-          <label className="text-sm text-[#b0b0b0]">
-            <input
-              className="mr-2"
-              type="checkbox"
-              checked={rows.length > 0 && selectedIds.length === rows.length}
-              onChange={(e) =>
-                setSelectedIds(e.target.checked ? rows.map((r) => r.id) : [])
-              }
-            />
-            전체선택
-          </label>
-          <button className="btn" onClick={runReanalyze} disabled={reAnalyzing || selectedIds.length === 0}>
-            {reAnalyzing
-              ? `${progress.total}개 중 ${progress.current}개 분석 중...`
-              : "🔄 선택한 데이터 재분석"}
+      <section className="card space-y-3 p-5">
+        <h2 className="text-lg font-semibold text-zinc-900">분석 프롬프트 (수동 입력)</h2>
+        <p className="text-xs text-zinc-600">
+          선택한 행마다 proxy·스크립트·조회수 등이 입력으로 쓰일 때, 이 텍스트가 시스템 프롬프트 역할을 한다고 가정합니다.
+        </p>
+        <textarea
+          className="input min-h-56 resize-y font-mono-ui text-sm leading-relaxed"
+          placeholder="여기에 W(시스템 프롬프트) 전체를 붙여 넣으세요."
+          value={manualPrompt}
+          onChange={(e) => setManualPrompt(e.target.value)}
+          spellCheck={false}
+        />
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className="btn text-sm" onClick={loadStoredW}>
+            저장된 W 불러오기
+          </button>
+          <button type="button" className="btn text-sm" onClick={resetDefaultPrompt}>
+            기본 프롬프트로 초기화
           </button>
         </div>
-        {reAnalyzing && (
-          <div className="mt-3 h-2 w-full rounded-full bg-[#1d1d31]">
-            <div
-              className="h-2 rounded-full bg-[#00ff88]"
-              style={{
-                width:
-                  progress.total === 0
-                    ? "0%"
-                    : `${Math.round((progress.current / progress.total) * 100)}%`,
-              }}
-            />
-          </div>
-        )}
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="text-[#b0b0b0]">
-              <tr>
-                <th className="pb-2">선택</th>
-                <th className="pb-2">영상 묘사</th>
-                <th className="pb-2">현재 훅점수</th>
-                <th className="pb-2">조회수</th>
-                <th className="pb-2">마지막 분석 시간</th>
-              </tr>
-            </thead>
-            <tbody className="text-[#e0e0e0]">
-              {rows.map((row) => {
-                const parsed = parseGroundTruth(row.ground_truth);
-                return (
-                  <tr key={row.id} className="border-t border-[#1a1a2e]">
-                    <td className="py-2">
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.includes(row.id)}
-                        onChange={(e) =>
-                          setSelectedIds((prev) =>
-                            e.target.checked
-                              ? [...prev, row.id]
-                              : prev.filter((id) => id !== row.id)
-                          )
-                        }
-                      />
-                    </td>
-                    <td className="py-2">{shorten(row.description ?? "-", 50)}</td>
-                    <td className="py-2">{parsed?.score ?? "-"}</td>
-                    <td className="py-2">{row.views ?? "-"}</td>
-                    <td className="py-2">
-                      {row.created_at?.slice(0, 16).replace("T", " ") ?? "-"}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
       </section>
 
-      {comparison && (
+      <MockDataTable
+        selectedIds={selectedIds}
+        onSelectedIdsChange={setSelectedIds}
+        subtitleExtra={
+          <p className="mt-2 text-xs text-zinc-600">
+            최적화 탭의 Mock 데이터 테이블과 동일한 목록·필터입니다. 체크한 행만 아래 실행에 사용됩니다.
+          </p>
+        }
+        footerSlot={
+          <>
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+              <button type="button" className="btn" disabled={!canRun} onClick={() => void runSimulation()}>
+                {simRunning
+                  ? `시뮬레이션 중… ${simProgress.current}/${simProgress.total}`
+                  : "선택한 DB로 프롬프트 실행 (시뮬레이션)"}
+              </button>
+              {!manualPrompt.trim() && (
+                <span className="text-xs text-zinc-600">프롬프트를 입력해 주세요.</span>
+              )}
+              {manualPrompt.trim() && selectedIds.size === 0 && (
+                <span className="text-xs text-zinc-600">최소 1행을 선택해 주세요.</span>
+              )}
+            </div>
+            {simRunning && simProgress.total > 0 && (
+              <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-zinc-200">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-blue-500 to-blue-600 transition-[width] duration-200"
+                  style={{
+                    width: `${Math.round((simProgress.current / simProgress.total) * 100)}%`,
+                  }}
+                />
+              </div>
+            )}
+          </>
+        }
+      />
+
+      {mockResults && mockResults.length > 0 && (
         <section className="card space-y-4 p-5">
-          <div className="flex items-center gap-4">
-            <p className="text-lg font-bold text-white">
-              이전 상관계수: {comparison.beforeCorr?.toFixed(3) ?? "N/A"}
-            </p>
-            <p className="text-lg font-bold text-white">
-              현재 상관계수: {comparison.afterCorr?.toFixed(3) ?? "N/A"}
-            </p>
-            <p
-              className={`text-sm font-semibold ${
-                (comparison.afterCorr ?? -999) > (comparison.beforeCorr ?? -999)
-                  ? "text-[#00ff88]"
-                  : "text-[#ff3b5c]"
-              }`}
-            >
-              {(comparison.afterCorr ?? -999) > (comparison.beforeCorr ?? -999)
-                ? "↑ 개선!"
-                : "↓ 악화"}
-            </p>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead className="text-[#b0b0b0]">
+          <h2 className="text-lg font-semibold text-zinc-900">시뮬레이션 결과</h2>
+          <p className="text-xs text-zinc-600">
+            실제 API 연동 전 · 선택한 {mockResults.length}건에 대한 가짜 점수·요약입니다.
+          </p>
+          <div className="overflow-x-auto rounded-xl border border-zinc-200">
+            <table className="w-full min-w-[640px] text-left text-sm">
+              <thead className="bg-zinc-100 text-zinc-700">
                 <tr>
-                  <th className="pb-2">영상</th>
-                  <th className="pb-2">이전 훅점수</th>
-                  <th className="pb-2">새 훅점수</th>
-                  <th className="pb-2">변화</th>
-                  <th className="pb-2">조회수</th>
+                  <th className="px-3 py-2 font-medium">영상 설명</th>
+                  <th className="px-3 py-2 font-medium">조회수</th>
+                  <th className="px-3 py-2 font-medium">Mock 점수</th>
+                  <th className="px-3 py-2 font-medium">Mock 판정</th>
+                  <th className="px-3 py-2 font-medium">요약</th>
                 </tr>
               </thead>
-              <tbody className="text-[#e0e0e0]">
-                {comparison.changes.map((row) => (
-                  <tr key={row.id} className="border-t border-[#1a1a2e]">
-                    <td className="py-2">{shorten(row.description, 50)}</td>
-                    <td className="py-2">{row.before ?? "-"}</td>
-                    <td className="py-2">{row.after ?? "-"}</td>
-                    <td
-                      className={`py-2 ${
-                        (row.diff ?? 0) >= 0 ? "text-[#00ff88]" : "text-[#ff3b5c]"
-                      }`}
-                    >
-                      {row.diff === null ? "-" : row.diff > 0 ? `+${row.diff}` : row.diff}
+              <tbody className="text-zinc-800">
+                {mockResults.map((r) => (
+                  <tr key={r.id} className="border-t border-zinc-200">
+                    <td className="max-w-xs px-3 py-2 align-top">{shorten(r.description, 56)}</td>
+                    <td className="whitespace-nowrap px-3 py-2 align-top font-mono-ui">
+                      {r.views != null ? formatViews(r.views) : "—"}
                     </td>
-                    <td className="py-2">{row.views ?? "-"}</td>
+                    <td className="whitespace-nowrap px-3 py-2 align-top font-mono-ui text-zinc-900">
+                      {r.score}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 align-top">{r.verdict}</td>
+                    <td className="max-w-md px-3 py-2 align-top text-xs text-zinc-600">{r.summary}</td>
                   </tr>
                 ))}
               </tbody>
@@ -465,135 +218,6 @@ export default function AnalyzePage() {
           </div>
         </section>
       )}
-
-      <section className="card space-y-4 p-5">
-        <textarea
-          className="input min-h-36"
-          placeholder="영상의 첫 3초를 텍스트로 묘사하세요."
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-        />
-        <div className="grid gap-3 md:grid-cols-3">
-          <input
-            className="input font-mono-ui"
-            placeholder="조회수"
-            value={views}
-            onChange={(e) => setViews(e.target.value)}
-          />
-          <input
-            className="input font-mono-ui"
-            placeholder="좋아요"
-            value={likes}
-            onChange={(e) => setLikes(e.target.value)}
-          />
-          <input
-            className="input font-mono-ui"
-            placeholder="댓글수"
-            value={comments}
-            onChange={(e) => setComments(e.target.value)}
-          />
-        </div>
-        <p className="inline-flex w-fit rounded-full border border-[#ffaa00] px-3 py-1 text-xs text-[#ffaa00]">
-          선택 · AI에게 비공개
-        </p>
-        <div className="flex flex-wrap gap-2">
-          {EXAMPLES.map((example) => (
-            <button
-              key={example}
-              className="example-pill"
-              onClick={() => setText(example)}
-              type="button"
-              title={example}
-            >
-              {shorten(example)}
-            </button>
-          ))}
-        </div>
-        <button className="btn" onClick={analyze} disabled={loading}>
-          {loading ? "분석 중..." : "🧠 3초 훅 분석하기"}
-        </button>
-      </section>
-
-      {result && (
-        <>
-          <section className="card grid gap-4 p-5 md:grid-cols-2">
-            <div>
-              <p className="text-sm text-[#b0b0b0]">HOOK SCORE</p>
-              <p
-                className={`font-mono-ui text-[56px] font-extrabold leading-none ${
-                  safeNum(result.score) >= 8 ? "score-strong" : "score-mid"
-                }`}
-              >
-                {safeNum(result.score).toFixed(1)}
-              </p>
-              <p className="mt-3">
-                <span className="rounded-full border border-[#2a2a40] bg-[#121224] px-3 py-1 text-sm text-[#e0e0e0]">
-                  {safeText(result.verdict, "훅 없음")}
-                </span>
-              </p>
-            </div>
-            <div className="text-sm text-[#e0e0e0]">
-              <p>조회수: {views || "-"}</p>
-              <p>좋아요: {likes || "-"}</p>
-              <p>댓글수: {comments || "-"}</p>
-            </div>
-          </section>
-
-          <section className="grid gap-4 md:grid-cols-3">
-            <ScoreBars
-              title={`생존자극 (${result.s_total}/10)`}
-              icon="⚡"
-              color="red"
-              items={[
-                { name: "threat", value: result.s_threat, reason: result.s_threat_r },
-                { name: "loss_fear", value: result.s_loss, reason: result.s_loss_r },
-                { name: "uncertainty", value: result.s_uncert, reason: result.s_uncert_r },
-              ]}
-            />
-            <ScoreBars
-              title={`번식자극 (${result.r_total}/10)`}
-              icon="💎"
-              color="purple"
-              items={[
-                { name: "physical_attraction", value: result.r_phys, reason: result.r_phys_r },
-                { name: "status_resource", value: result.r_status, reason: result.r_status_r },
-                { name: "social_charm", value: result.r_charm, reason: result.r_charm_r },
-              ]}
-            />
-            <ScoreBars
-              title={`감정강도 (${result.e_total}/10)`}
-              icon="🔥"
-              color="yellow"
-              items={[
-                { name: "trigger_speed", value: result.e_speed, reason: result.e_speed_r },
-                { name: "emotion_clarity", value: result.e_clarity, reason: result.e_clarity_r },
-                { name: "intensity", value: result.e_intense, reason: result.e_intense_r },
-              ]}
-            />
-          </section>
-
-          <section className="card space-y-2 p-5 text-sm text-[#e0e0e0]">
-            <p>지배감정: {safeText(result.e_dominant)}</p>
-            <p>훅 메커니즘: {safeText(result.hook)}</p>
-            <p>시청 동기: {safeText(result.motivation)}</p>
-            <button className="btn" onClick={() => setShowReason((v) => !v)}>
-              상세 분석 근거 토글
-            </button>
-            {showReason && (
-              <div className="rounded-lg border border-[#1a1a2e] bg-[#101024] p-3 text-xs text-[#b0b0b0]">
-                {result.disc_desc}
-              </div>
-            )}
-            <p>
-              발견된 하위 요소: <span className="text-[#00ff88]">{safeText(result.disc_label, "없음")}</span>
-            </p>
-            <p className="text-[#b0b0b0]">매핑: {safeText(result.disc_maps, "없음")}</p>
-            <p className="text-[#00ff88]">개선 제안: {safeText(result.tip, "없음")}</p>
-          </section>
-        </>
-      )}
-
-      {message && <p className="text-sm text-[#b0b0b0]">{message}</p>}
     </div>
   );
 }

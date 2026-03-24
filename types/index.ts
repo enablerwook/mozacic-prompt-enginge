@@ -42,6 +42,8 @@ export interface DatasetRow {
   id: string;
   title?: string | null;
   description?: string | null;
+  /** 대본/스크립트 텍스트 (선택) */
+  script?: string | null;
   viewer_sentiment?: string | null;
   ref_gemini?: string | null;
   ref_mozaic?: string | null;

@@ -1,7 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
+import AutopilotProgress from "@/components/optimize/AutopilotProgress";
+import MockDataTable from "@/components/optimize/MockDataTable";
+import PromptDiffView from "@/components/optimize/PromptDiffView";
+import { MOCK_BASE_W, MOCK_NEW_W } from "@/lib/mockMozaicData";
+import {
+  buildOptimizeHistoryLine,
+  DEFAULT_OPTIMIZE_FIELDS,
+  type OptimizeContextField,
+} from "@/lib/optimizeFields";
 import { supabase } from "@/lib/supabase";
 import { correlationLabel, pearsonCorrelation } from "@/lib/stats";
 import { W_PROMPT_STORAGE_KEY, W_VERSION_STORAGE_KEY } from "@/lib/wPrompt";
@@ -16,12 +25,32 @@ function parseGroundTruth(value?: string | null) {
   }
 }
 
+function subscribeStoredW(onChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener("storage", onChange);
+  return () => window.removeEventListener("storage", onChange);
+}
+
+function getStoredW() {
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem(W_PROMPT_STORAGE_KEY) ?? "";
+}
+
 export default function OptimizePage() {
   const router = useRouter();
   const [rows, setRows] = useState<DatasetRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<OptimizeResult | null>(null);
   const [message, setMessage] = useState("");
+  const storedW = useSyncExternalStore(subscribeStoredW, getStoredW, () => "");
+  const [asOfHistory] = useState(() => new Date());
+  const [optimizeFields, setOptimizeFields] = useState<Record<OptimizeContextField, boolean>>(
+    () => ({ ...DEFAULT_OPTIMIZE_FIELDS })
+  );
+
+  function setOptimizeField(key: OptimizeContextField, value: boolean) {
+    setOptimizeFields((prev) => ({ ...prev, [key]: value }));
+  }
 
   useEffect(() => {
     async function load() {
@@ -37,6 +66,9 @@ export default function OptimizePage() {
     }
     void load();
   }, []);
+
+  const basePromptForDiff = storedW.trim() ? storedW : MOCK_BASE_W;
+  const newPromptForDiff = result?.prompt?.trim() ? result.prompt : MOCK_NEW_W;
 
   const stats = useMemo(() => {
     const withPerf = rows.filter(
@@ -66,12 +98,7 @@ export default function OptimizePage() {
         mode: "optimize",
         payload: {
           correlation: stats.corr,
-          historyLines: rows.map((r) => {
-            const parsed = parseGroundTruth(r.ground_truth);
-            return `영상: ${r.description ?? "-"} | 훅점수: ${
-              parsed?.score ?? "-"
-            } | 조회수: ${r.views ?? "-"} | 판정: ${parsed?.verdict ?? "-"}`;
-          }),
+          historyLines: rows.map((r) => buildOptimizeHistoryLine(r, optimizeFields, asOfHistory)),
         },
       }),
     });
@@ -96,40 +123,22 @@ export default function OptimizePage() {
   return (
     <div className="mx-auto max-w-6xl space-y-5">
       <section className="grid gap-3 md:grid-cols-4">
-        <div className="card p-4 text-[#e0e0e0]">분석 데이터 수: {stats.total}</div>
-        <div className="card p-4 text-[#e0e0e0]">성과 입력 수: {stats.withPerf}</div>
-        <div className="card p-4 text-[#e0e0e0]">
+        <div className="card p-4 text-zinc-800">분석 데이터 수: {stats.total}</div>
+        <div className="card p-4 text-zinc-800">성과 입력 수: {stats.withPerf}</div>
+        <div className="card p-4 text-zinc-800">
           상관계수: {stats.corr === null ? "-" : stats.corr.toFixed(3)}
         </div>
-        <div className="card p-4 text-[#e0e0e0]">하위요소 수: {stats.subCount}</div>
+        <div className="card p-4 text-zinc-800">하위요소 수: {stats.subCount}</div>
       </section>
 
-      <section className="card p-5 text-sm text-[#b0b0b0]">
+      <MockDataTable
+        showOptimizeFieldToggles
+        optimizeFieldInclude={optimizeFields}
+        onOptimizeFieldIncludeChange={setOptimizeField}
+      />
+
+      <section className="card p-5 text-sm text-zinc-600">
         상태: {correlationLabel(stats.corr)}
-      </section>
-
-      <section className="card overflow-x-auto p-5">
-        <h2 className="mb-3 text-lg font-semibold text-white">히스토리 요약</h2>
-        <table className="w-full text-left text-sm">
-          <thead className="text-[#b0b0b0]">
-            <tr>
-              <th>텍스트</th>
-              <th>점수</th>
-              <th>조회수</th>
-              <th>판정</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.slice(0, 10).map((r) => (
-              <tr key={r.id} className="border-t border-[#1a1a2e] text-[#e0e0e0]">
-                <td className="max-w-lg truncate py-2">{r.description}</td>
-                <td>{parseGroundTruth(r.ground_truth)?.score ?? "-"}</td>
-                <td>{r.views ?? "-"}</td>
-                <td>{parseGroundTruth(r.ground_truth)?.verdict ?? "-"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
       </section>
 
       <button className="btn" onClick={runOptimize} disabled={loading || rows.length < 2}>
@@ -137,24 +146,20 @@ export default function OptimizePage() {
       </button>
 
       {result && (
-        <section className="card space-y-3 border border-[#00ff88]/50 p-5 shadow-[0_0_24px_rgba(0,255,136,0.25)]">
-          <h3 className="text-lg font-bold text-[#00ff88]">W 진단 결과</h3>
-          <p className="text-sm text-[#b0b0b0]">프롬프트 문제점</p>
-          <p className="text-sm text-[#e0e0e0]">{result.diagnosis}</p>
-          <p className="text-sm text-[#b0b0b0]">예측 실패 항목</p>
-          <p className="text-sm text-[#e0e0e0]">{result.weak_items}</p>
-          <p className="text-sm text-[#b0b0b0]">놓친 요소</p>
-          <p className="text-sm text-[#e0e0e0]">{result.missing_factors}</p>
-          <p className="text-sm text-[#b0b0b0]">가중치 조정</p>
-          <p className="text-sm text-[#e0e0e0]">{result.weight_suggestion}</p>
-          <p className="text-sm text-[#b0b0b0]">최적화된 프롬프트 (W1)</p>
-          <textarea
-            className="input min-h-56 border-[#00ff88]/50 bg-[#082015] text-[#d9ffe9]"
-            readOnly
-            value={result.prompt}
-          />
-          <p className="text-sm text-[#b0b0b0]">변경사항</p>
-          <p className="text-sm text-[#e0e0e0]">{result.changes}</p>
+        <section className="card space-y-3 border border-blue-200 bg-blue-50/30 p-5">
+          <h3 className="text-lg font-semibold text-zinc-900">W 진단 결과</h3>
+          <p className="text-sm text-zinc-600">프롬프트 문제점</p>
+          <p className="text-sm text-zinc-800">{result.diagnosis}</p>
+          <p className="text-sm text-zinc-600">예측 실패 항목</p>
+          <p className="text-sm text-zinc-800">{result.weak_items}</p>
+          <p className="text-sm text-zinc-600">놓친 요소</p>
+          <p className="text-sm text-zinc-800">{result.missing_factors}</p>
+          <p className="text-sm text-zinc-600">가중치 조정</p>
+          <p className="text-sm text-zinc-800">{result.weight_suggestion}</p>
+          <p className="text-sm text-zinc-600">최적화된 프롬프트 (W1)</p>
+          <textarea className="input min-h-56" readOnly value={result.prompt} />
+          <p className="text-sm text-zinc-600">변경사항</p>
+          <p className="text-sm text-zinc-800">{result.changes}</p>
           <button
             className="btn"
             onClick={() => navigator.clipboard.writeText(result.prompt)}
@@ -167,7 +172,11 @@ export default function OptimizePage() {
         </section>
       )}
 
-      {message && <p className="text-sm text-red-300">{message}</p>}
+      {message && <p className="text-sm text-red-600">{message}</p>}
+
+      <AutopilotProgress />
+
+      <PromptDiffView basePrompt={basePromptForDiff} newPrompt={newPromptForDiff} />
     </div>
   );
 }

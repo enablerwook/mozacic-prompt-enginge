@@ -48,17 +48,17 @@ export default function HistoryPage() {
   return (
     <div className="mx-auto max-w-6xl space-y-5">
       <section className="card p-5">
-        <h1 className="text-2xl font-bold text-white">분석 히스토리 + 검증 대시보드</h1>
-        <p className="mt-2 text-sm text-[#b0b0b0]">
+        <h1 className="text-2xl font-bold text-zinc-900">분석 히스토리 + 검증 대시보드</h1>
+        <p className="mt-2 text-sm text-zinc-600">
           훅점수 vs 조회수 상관계수:{" "}
-          <span className="text-white">{corr === null ? "-" : corr.toFixed(3)}</span> ·{" "}
+          <span className="text-zinc-900">{corr === null ? "-" : corr.toFixed(3)}</span> ·{" "}
           {correlationLabel(corr)}
         </p>
       </section>
 
       <section className="card overflow-x-auto p-5">
         <table className="w-full text-left text-sm">
-          <thead className="text-[#b0b0b0]">
+          <thead className="border-b border-zinc-200 bg-zinc-100 text-zinc-700">
             <tr>
               <th className="pb-2">일시</th>
               <th className="pb-2">3초 텍스트</th>
@@ -67,11 +67,11 @@ export default function HistoryPage() {
               <th className="pb-2">조회수</th>
             </tr>
           </thead>
-          <tbody className="text-[#e0e0e0]">
+          <tbody className="text-zinc-800">
             {rows.map((r) => {
               const parsed = parseGroundTruth(r.ground_truth);
               return (
-              <tr key={r.id} className="border-t border-[#1a1a2e]">
+              <tr key={r.id} className="border-t border-zinc-200">
                 <td className="py-2">{r.created_at?.slice(0, 16).replace("T", " ")}</td>
                 <td className="max-w-xl truncate py-2">{r.description}</td>
                 <td className="py-2">{parsed?.score ?? "-"}</td>
@@ -83,7 +83,7 @@ export default function HistoryPage() {
         </table>
       </section>
 
-      {message && <p className="text-sm text-red-300">{message}</p>}
+      {message && <p className="text-sm text-red-600">{message}</p>}
     </div>
   );
 }

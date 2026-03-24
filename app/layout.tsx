@@ -13,7 +13,7 @@ export default function RootLayout({
   return (
     <html lang="ko">
       <body>
-        <div className="min-h-screen bg-[#07070f] text-zinc-100">
+        <div className="min-h-screen bg-white text-zinc-900">
           <div className="flex">
             <Sidebar />
             <main className="flex-1 p-6">{children}</main>
