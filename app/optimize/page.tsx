@@ -44,6 +44,7 @@ export default function OptimizePage() {
   const scoreCacheRef = useRef<Map<string, Map<string, HookScoreEntry>>>(new Map());
   const [currentRound, setCurrentRound] = useState<number | null>(null);
   const [scoreProgress, setScoreProgress] = useState<{ current: number; total: number } | null>(null);
+  const [phase, setPhase] = useState<"scoring" | "optimizing" | null>(null);
   const [runMeta, setRunMeta] = useState<{
     ai: string;
     dataCount: number;
@@ -121,43 +122,28 @@ export default function OptimizePage() {
     return { total: base.length, withPerf, corr, fieldCount };
   }, [targetRows, rows, optimizeFields]);
 
-  async function runOptimize() {
-    if (rows.length < 2) return;
-    setLoading(true);
-    setMessage("");
-    setResult(null);
-    setRunMeta(null);
-    setScoreProgress(null);
-
-    const abort = new AbortController();
-    abortRef.current = abort;
-
-    const rounds = Math.max(1, Math.min(repeatCount, 10));
-    let iterW = currentW.trim() || null;
-
-    // ── Phase 1: 배치+병렬 채점 (캐시 우선) ─────────────────────────
+  async function scoreRows(
+    rowsToScore: typeof targetRows,
+    wPrompt: string | null,
+    abort: AbortController
+  ): Promise<Map<string, HookScoreEntry>> {
     const BATCH_SIZE = 20;
     const MAX_PARALLEL = 5;
     const scoringModel = fastScoring
       ? (aiModel === "gemini" ? "gemini-2.0-flash" : "haiku")
       : undefined;
 
-    // 캐시 키: W 첫 200자 (변경 감지용)
-    const wCacheKey = (iterW ?? "default").slice(0, 200);
+    const wCacheKey = (wPrompt ?? "default").slice(0, 200);
     const cached = scoreCacheRef.current.get(wCacheKey) ?? new Map<string, HookScoreEntry>();
     const scoreMap = new Map<string, HookScoreEntry>(cached);
+    const uncachedRows = rowsToScore.filter((r) => !cached.has(r.id));
 
-    const uncachedRows = targetRows.filter((r) => !cached.has(r.id));
-
-    if (uncachedRows.length === 0) {
-      // 전부 캐시 히트 — 채점 스킵
-      setScoreProgress({ current: targetRows.length, total: targetRows.length });
-    } else {
+    if (uncachedRows.length > 0) {
       const batches: (typeof uncachedRows)[] = [];
       for (let i = 0; i < uncachedRows.length; i += BATCH_SIZE) {
         batches.push(uncachedRows.slice(i, i + BATCH_SIZE));
       }
-      setScoreProgress({ current: cached.size, total: targetRows.length });
+      setScoreProgress({ current: cached.size, total: rowsToScore.length });
 
       let scoredCount = cached.size;
       for (let bi = 0; bi < batches.length; bi += MAX_PARALLEL) {
@@ -177,7 +163,7 @@ export default function OptimizePage() {
                   geminiVersion,
                   scoringModel,
                   payload: {
-                    systemPrompt: iterW ?? undefined,
+                    systemPrompt: wPrompt ?? undefined,
                     rows: batch.map((r) => ({
                       id: r.id,
                       text: [r.title, r.description].filter(Boolean).join(" | "),
@@ -199,38 +185,56 @@ export default function OptimizePage() {
               if ((e as Error).name === "AbortError") return;
             }
             scoredCount += batch.length;
-            setScoreProgress({ current: Math.min(scoredCount, targetRows.length), total: targetRows.length });
+            setScoreProgress({ current: Math.min(scoredCount, rowsToScore.length), total: rowsToScore.length });
           })
         );
       }
-      // 캐시에 저장
       scoreCacheRef.current.set(wCacheKey, new Map(scoreMap));
     }
+
     setScoreProgress(null);
+    return scoreMap;
+  }
 
-    if (abort.signal.aborted) {
-      setLoading(false);
-      setMessage("중지되었습니다.");
-      return;
-    }
+  async function runOptimize() {
+    if (rows.length < 2) return;
+    setLoading(true);
+    setMessage("");
+    setResult(null);
+    setRunMeta(null);
+    setScoreProgress(null);
+    setPhase(null);
 
-    // ── Phase 2: 실제 훅점수 ↔ 조회수 상관계수 계산 ────────────────
-    const scoredRows = targetRows.filter((r) => scoreMap.has(r.id));
-    const hookScores = scoredRows.map((r) => scoreMap.get(r.id)!.score);
-    const viewCounts = scoredRows.map((r) => r.views);
-    const hookCorr = scoredRows.length >= 2
-      ? pearsonCorrelation(hookScores, viewCounts)
-      : null;
+    const abort = new AbortController();
+    abortRef.current = abort;
 
-    // ── Phase 3: 실제 점수 포함한 히스토리 → 최적화 AI 호출 ────────
-    const historyLines = targetRows.map((r) =>
-      buildOptimizeHistoryLine(r, optimizeFields, asOfHistory, scoreMap)
-    );
+    const rounds = Math.max(1, Math.min(repeatCount, 10));
+    let iterW = currentW.trim() || null;
     let lastResult: OptimizeResult | null = null;
+    let lastHookCorr: number | null = null;
 
     for (let i = 1; i <= rounds; i++) {
       if (abort.signal.aborted) break;
       setCurrentRound(i);
+
+      // ── 채점: 현재 iterW로 모든 행 채점 ──────────────────────────
+      setPhase("scoring");
+      const scoreMap = await scoreRows(targetRows, iterW, abort);
+      if (abort.signal.aborted) break;
+
+      // ── 상관계수 계산 ─────────────────────────────────────────────
+      const scoredRows = targetRows.filter((r) => scoreMap.has(r.id));
+      const hookScores = scoredRows.map((r) => scoreMap.get(r.id)!.score);
+      const viewCounts = scoredRows.map((r) => r.views);
+      lastHookCorr = scoredRows.length >= 2
+        ? pearsonCorrelation(hookScores, viewCounts)
+        : null;
+
+      // ── 최적화: 채점 결과로 W 개선 ───────────────────────────────
+      setPhase("optimizing");
+      const historyLines = targetRows.map((r) =>
+        buildOptimizeHistoryLine(r, optimizeFields, asOfHistory, scoreMap)
+      );
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -240,7 +244,7 @@ export default function OptimizePage() {
           ai: aiModel,
           geminiVersion,
           payload: {
-            correlation: hookCorr ?? stats.corr,
+            correlation: lastHookCorr ?? stats.corr,
             currentW: iterW,
             historyLines,
           },
@@ -251,6 +255,7 @@ export default function OptimizePage() {
         setMessage(data.error || "최적화 실패");
         setLoading(false);
         setCurrentRound(null);
+        setPhase(null);
         return;
       }
       lastResult = data as OptimizeResult;
@@ -259,15 +264,20 @@ export default function OptimizePage() {
 
     setLoading(false);
     setCurrentRound(null);
-    setResult(lastResult);
-    setRunMeta({
-      ai: aiModel,
-      dataCount: targetRows.length,
-      rounds,
-      fieldCount: stats.fieldCount,
-      hookCorr,
-      ranAt: new Date().toLocaleString("ko-KR"),
-    });
+    setPhase(null);
+    if (!abort.signal.aborted) {
+      setResult(lastResult);
+      setRunMeta({
+        ai: aiModel,
+        dataCount: targetRows.length,
+        rounds,
+        fieldCount: stats.fieldCount,
+        hookCorr: lastHookCorr,
+        ranAt: new Date().toLocaleString("ko-KR"),
+      });
+    } else {
+      setMessage("중지되었습니다.");
+    }
   }
 
   function applyOptimizedPrompt() {
@@ -459,8 +469,8 @@ export default function OptimizePage() {
         <div className="space-y-1">
           <div className="flex items-center justify-between text-xs text-zinc-500">
             <span>
-              채점 중 — {scoreProgress.current}/{scoreProgress.total}건
-              {fastScoring && <span className="ml-1 text-blue-500">({aiModel === "gemini" ? "2.0-flash" : "Haiku"} 사용)</span>}
+              {currentRound !== null ? `${currentRound}/${Math.max(1, Math.min(repeatCount, 10))}회차 ` : ""}채점 중 — {scoreProgress.current}/{scoreProgress.total}건
+              {fastScoring && <span className="ml-1 text-blue-500">({aiModel === "gemini" ? "2.0-flash" : "Haiku"})</span>}
             </span>
             <span>{Math.round((scoreProgress.current / scoreProgress.total) * 100)}%</span>
           </div>
