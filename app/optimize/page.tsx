@@ -213,59 +213,66 @@ export default function OptimizePage() {
     let lastResult: OptimizeResult | null = null;
     let lastHookCorr: number | null = null;
 
-    for (let i = 1; i <= rounds; i++) {
-      if (abort.signal.aborted) break;
-      setCurrentRound(i);
+    try {
+      for (let i = 1; i <= rounds; i++) {
+        if (abort.signal.aborted) break;
+        setCurrentRound(i);
 
-      // ── 채점: 현재 iterW로 모든 행 채점 ──────────────────────────
-      setPhase("scoring");
-      const scoreMap = await scoreRows(targetRows, iterW, abort);
-      if (abort.signal.aborted) break;
+        // ── 채점: 현재 iterW로 모든 행 채점 ────────────────────────
+        setPhase("scoring");
+        const scoreMap = await scoreRows(targetRows, iterW, abort);
+        if (abort.signal.aborted) break;
 
-      // ── 상관계수 계산 ─────────────────────────────────────────────
-      const scoredRows = targetRows.filter((r) => scoreMap.has(r.id));
-      const hookScores = scoredRows.map((r) => scoreMap.get(r.id)!.score);
-      const viewCounts = scoredRows.map((r) => r.views);
-      lastHookCorr = scoredRows.length >= 2
-        ? pearsonCorrelation(hookScores, viewCounts)
-        : null;
+        // ── 상관계수 계산 ───────────────────────────────────────────
+        const scoredRows = targetRows.filter((r) => scoreMap.has(r.id));
+        const hookScores = scoredRows.map((r) => scoreMap.get(r.id)!.score);
+        const viewCounts = scoredRows.map((r) => r.views);
+        lastHookCorr = scoredRows.length >= 2
+          ? pearsonCorrelation(hookScores, viewCounts)
+          : null;
 
-      // ── 최적화: 채점 결과로 W 개선 ───────────────────────────────
-      setPhase("optimizing");
-      const historyLines = targetRows.map((r) =>
-        buildOptimizeHistoryLine(r, optimizeFields, asOfHistory, scoreMap)
-      );
-      const res = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        signal: abort.signal,
-        body: JSON.stringify({
-          mode: "optimize",
-          ai: aiModel,
-          geminiVersion,
-          payload: {
-            correlation: lastHookCorr ?? stats.corr,
-            currentW: iterW,
-            historyLines,
-          },
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setMessage(data.error || "최적화 실패");
-        setLoading(false);
-        setCurrentRound(null);
-        setPhase(null);
-        return;
+        // ── 최적화: 채점 결과로 W 개선 ─────────────────────────────
+        setPhase("optimizing");
+        const historyLines = targetRows.map((r) =>
+          buildOptimizeHistoryLine(r, optimizeFields, asOfHistory, scoreMap)
+        );
+        const res = await fetch("/api/analyze", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          signal: abort.signal,
+          body: JSON.stringify({
+            mode: "optimize",
+            ai: aiModel,
+            geminiVersion,
+            payload: {
+              correlation: lastHookCorr ?? stats.corr,
+              currentW: iterW,
+              historyLines,
+            },
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setMessage(data.error || "최적화 실패");
+          return;
+        }
+        lastResult = data as OptimizeResult;
+        iterW = lastResult.prompt.trim() || iterW;
       }
-      lastResult = data as OptimizeResult;
-      iterW = lastResult.prompt.trim() || iterW;
+    } catch (e) {
+      if ((e as Error).name !== "AbortError") {
+        setMessage((e as Error).message || "알 수 없는 오류");
+      }
+    } finally {
+      setLoading(false);
+      setCurrentRound(null);
+      setPhase(null);
+      setScoreProgress(null);
     }
 
-    setLoading(false);
-    setCurrentRound(null);
-    setPhase(null);
-    if (!abort.signal.aborted) {
+    if (abort.signal.aborted) {
+      setMessage("중지되었습니다.");
+    } else if (lastResult) {
       setResult(lastResult);
       setRunMeta({
         ai: aiModel,
@@ -275,8 +282,6 @@ export default function OptimizePage() {
         hookCorr: lastHookCorr,
         ranAt: new Date().toLocaleString("ko-KR"),
       });
-    } else {
-      setMessage("중지되었습니다.");
     }
   }
 
