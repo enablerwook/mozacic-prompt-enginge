@@ -1,5 +1,4 @@
-import { getUploadElapsedDays } from "@/lib/mockMozaicData";
-import type { AnalyzeResult, DatasetRow } from "@/types";
+import { getUploadElapsedDays, type MockMozaicRow } from "@/lib/mockMozaicData";
 
 /** Mock 테이블 열과 맞춘 최적화 컨텍스트 필드 + DB 전용 분석 필드 */
 export type OptimizeContextField =
@@ -14,7 +13,8 @@ export type OptimizeContextField =
   | "uploadDate"
   | "elapsed"
   | "hookScore"
-  | "verdict";
+  | "verdict"
+  | "createdAt";
 
 export const DEFAULT_OPTIMIZE_FIELDS: Record<OptimizeContextField, boolean> = {
   title: true,
@@ -29,71 +29,62 @@ export const DEFAULT_OPTIMIZE_FIELDS: Record<OptimizeContextField, boolean> = {
   elapsed: true,
   hookScore: true,
   verdict: true,
+  createdAt: false,
 };
 
-function parseGroundTruth(value?: string | null): AnalyzeResult | null {
-  if (!value) return null;
-  try {
-    return JSON.parse(value) as AnalyzeResult;
-  } catch {
-    return null;
-  }
-}
-
-/** datasets 행을 최적화 API용 한 줄로 직렬화 (체크된 필드만 포함) */
+/** MockMozaicRow를 최적화 API용 한 줄로 직렬화 (체크된 필드만 포함) */
 export function buildOptimizeHistoryLine(
-  r: DatasetRow,
+  r: MockMozaicRow,
   include: Record<OptimizeContextField, boolean>,
   asOf: Date
 ): string {
-  const parsed = parseGroundTruth(r.ground_truth);
   const parts: string[] = [];
 
   if (include.title && r.title?.trim()) {
     parts.push(`제목: ${r.title.trim()}`);
   }
   if (include.description) {
-    parts.push(`proxy: ${r.description ?? "-"}`);
+    parts.push(`proxy: ${r.description || "-"}`);
   }
   if (include.script) {
-    parts.push(`스크립트: ${r.script ?? "-"}`);
+    const scriptPreview = r.script ? r.script.slice(0, 200) : "-";
+    parts.push(`스크립트: ${scriptPreview}`);
   }
   if (include.language) {
-    parts.push(`언어: —`);
+    parts.push(`언어: ${r.language || "-"}`);
   }
   if (include.contentType) {
-    parts.push(`콘텐츠타입: —`);
+    parts.push(`콘텐츠타입: ${r.contentType || "-"}`);
   }
   if (include.views) {
-    parts.push(`조회수: ${r.views ?? "-"}`);
+    parts.push(`조회수: ${r.views}`);
   }
   if (include.likes) {
-    parts.push(`좋아요: ${r.likes ?? "-"}`);
+    parts.push(`좋아요: ${r.likes}`);
   }
   if (include.likeRatio) {
-    const v = r.views;
-    const l = r.likes;
-    if (typeof v === "number" && v > 0 && typeof l === "number") {
-      parts.push(`좋아요율: ${((l / v) * 100).toFixed(2)}%`);
-    } else {
-      parts.push(`좋아요율: —`);
-    }
+    const ratio = r.likeRatio ?? (r.views > 0 ? (r.likes / r.views) * 100 : 0);
+    parts.push(`좋아요율: ${ratio.toFixed(2)}%`);
   }
-  if (include.uploadDate && r.created_at) {
-    parts.push(`업로드: ${r.created_at.slice(0, 16).replace("T", " ")}`);
+  if (include.uploadDate) {
+    parts.push(`업로드: ${r.date.slice(0, 16).replace("T", " ")}`);
   }
-  if (include.elapsed && r.created_at) {
-    parts.push(`경과: ${formatDplus(r.created_at, asOf)}`);
+  if (include.elapsed) {
+    const days = r.elapsedDays ?? getUploadElapsedDays(r.date, asOf);
+    parts.push(`경과: D+${days}`);
+  }
+  if (include.createdAt && r.createdAt) {
+    parts.push(`분석일시: ${r.createdAt.slice(0, 16).replace("T", " ")}`);
   }
   if (include.hookScore) {
-    parts.push(`훅점수: ${parsed?.score ?? "-"}`);
+    parts.push(`훅점수: -`);
   }
   if (include.verdict) {
-    parts.push(`판정: ${parsed?.verdict ?? "-"}`);
+    parts.push(`판정: -`);
   }
 
   if (parts.length === 0) {
-    return `proxy: ${r.description ?? "-"}`;
+    return `proxy: ${r.description || "-"}`;
   }
   return parts.join(" | ");
 }

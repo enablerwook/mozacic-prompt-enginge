@@ -14,6 +14,12 @@ export type MockMozaicRow = {
   likes: number;
   /** 업로드 시각 (ISO) — D+N 계산 기준일 */
   date: string;
+  /** 업로드일로부터 경과 일수 (API에서 사전 계산) */
+  elapsedDays?: number;
+  /** 좋아요율 (%) */
+  likeRatio?: number;
+  /** Mozaic 분석 생성 일시 (ISO) */
+  createdAt?: string;
 };
 
 export const mockMozaicData: MockMozaicRow[] = [

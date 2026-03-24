@@ -5,25 +5,15 @@ import { useRouter } from "next/navigation";
 import AutopilotProgress from "@/components/optimize/AutopilotProgress";
 import MockDataTable from "@/components/optimize/MockDataTable";
 import PromptDiffView from "@/components/optimize/PromptDiffView";
-import { MOCK_BASE_W, MOCK_NEW_W } from "@/lib/mockMozaicData";
+import { MOCK_BASE_W, MOCK_NEW_W, type MockMozaicRow } from "@/lib/mockMozaicData";
 import {
   buildOptimizeHistoryLine,
   DEFAULT_OPTIMIZE_FIELDS,
   type OptimizeContextField,
 } from "@/lib/optimizeFields";
-import { supabase } from "@/lib/supabase";
 import { correlationLabel, pearsonCorrelation } from "@/lib/stats";
 import { W_PROMPT_STORAGE_KEY, W_VERSION_STORAGE_KEY } from "@/lib/wPrompt";
-import { AnalyzeResult, DatasetRow, OptimizeResult } from "@/types";
-
-function parseGroundTruth(value?: string | null) {
-  if (!value) return null;
-  try {
-    return JSON.parse(value) as AnalyzeResult;
-  } catch {
-    return null;
-  }
-}
+import { OptimizeResult } from "@/types";
 
 function subscribeStoredW(onChange: () => void) {
   if (typeof window === "undefined") return () => {};
@@ -38,7 +28,7 @@ function getStoredW() {
 
 export default function OptimizePage() {
   const router = useRouter();
-  const [rows, setRows] = useState<DatasetRow[]>([]);
+  const [rows, setRows] = useState<MockMozaicRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<OptimizeResult | null>(null);
   const [message, setMessage] = useState("");
@@ -54,15 +44,14 @@ export default function OptimizePage() {
 
   useEffect(() => {
     async function load() {
-      const { data, error } = await supabase
-        .from("datasets")
-        .select("*")
-        .order("created_at", { ascending: false });
-      if (error) {
-        setMessage(error.message);
+      const res = await fetch("/api/mozaic-data");
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "데이터 로드 실패" }));
+        setMessage(err.error ?? "데이터 로드 실패");
         return;
       }
-      setRows((data ?? []) as DatasetRow[]);
+      const data = (await res.json()) as MockMozaicRow[];
+      setRows(data);
     }
     void load();
   }, []);
@@ -71,18 +60,13 @@ export default function OptimizePage() {
   const newPromptForDiff = result?.prompt?.trim() ? result.prompt : MOCK_NEW_W;
 
   const stats = useMemo(() => {
-    const withPerf = rows.filter(
-      (r) => typeof r.views === "number" || typeof r.likes === "number" || typeof r.comments === "number"
-    ).length;
-    const withScore = rows.filter(
-      (r) =>
-        typeof parseGroundTruth(r.ground_truth)?.score === "number" &&
-        typeof r.views === "number"
+    const withPerf = rows.filter((r) => r.views > 0).length;
+    // hook score 미확보 상태 — 좋아요율 vs 조회수 상관관계로 대체
+    const likeRatios = rows.map((r) =>
+      r.views > 0 ? (r.likes / r.views) * 100 : 0
     );
-    const corr = pearsonCorrelation(
-      withScore.map((r) => Number(parseGroundTruth(r.ground_truth)?.score ?? 0)),
-      withScore.map((r) => Number(r.views))
-    );
+    const viewCounts = rows.map((r) => r.views);
+    const corr = pearsonCorrelation(likeRatios, viewCounts);
     return { total: rows.length, withPerf, corr, subCount: 9 };
   }, [rows]);
 
@@ -132,6 +116,7 @@ export default function OptimizePage() {
       </section>
 
       <MockDataTable
+        rows={rows}
         showOptimizeFieldToggles
         optimizeFieldInclude={optimizeFields}
         onOptimizeFieldIncludeChange={setOptimizeField}

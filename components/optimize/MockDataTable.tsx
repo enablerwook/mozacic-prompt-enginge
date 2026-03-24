@@ -10,13 +10,15 @@ import {
 } from "@/lib/mockMozaicData";
 
 type SortKey = "views_desc" | "views_asc" | "date_desc" | "date_asc";
-type FilterMenu = "language" | "views" | "elapsed" | null;
+type FilterMenu = "language" | "views" | "elapsed" | "analysisDate" | null;
 
 /** 슬라이더·입력에서 이 값 이상이면 조회수 상한 없음(MAX), 350만 초과 조회수 행 포함 */
 const VIEWS_SLIDER_MAX = 3_500_000;
 const VIEWS_SLIDER_STEP = 10_000;
 /** D+ 필터 수동 입력 상한 */
 const D_PLUS_INPUT_MAX = 9999;
+/** 분석일 필터 최대값 — 이 값이면 MAX(제한 없음) */
+const ANALYSIS_DAYS_MAX = 100;
 
 /** 서버(Node)·브라우저 모두 동일 문자열 보장 (Hydration). ko-KR + 서울 고정. */
 const DISPLAY_LOCALE = "ko-KR" as const;
@@ -75,6 +77,8 @@ function FilterDot({ on }: { on: boolean }) {
 type PopoverPos = { top: number; left: number; width: number };
 
 export type MockDataTableProps = {
+  /** 외부에서 주입하는 실제 데이터. 미넘기면 mockMozaicData 사용 */
+  rows?: MockMozaicRow[];
   /** 부모가 선택 상태를 관리할 때 (예: 단일 테스트). 미넘기면 테이블 내부 state 사용 */
   selectedIds?: Set<string>;
   onSelectedIdsChange?: (next: Set<string>) => void;
@@ -113,6 +117,7 @@ function OptimizeFieldToggle({
 }
 
 export default function MockDataTable({
+  rows: rowsProp,
   selectedIds: selectedIdsProp,
   onSelectedIdsChange,
   footerSlot,
@@ -122,6 +127,10 @@ export default function MockDataTable({
   onOptimizeFieldIncludeChange,
 }: MockDataTableProps = {}) {
   const [asOf] = useState(() => new Date());
+  const allRows = useMemo(
+    () => (rowsProp !== undefined ? rowsProp : mockMozaicData),
+    [rowsProp]
+  );
 
   const [sortKey, setSortKey] = useState<SortKey>("views_desc");
   const [search, setSearch] = useState("");
@@ -147,6 +156,8 @@ export default function MockDataTable({
   const [languageFilter, setLanguageFilter] = useState<string>("all");
   const [dMin, setDMin] = useState(0);
   const [dMax, setDMax] = useState(D_PLUS_INPUT_MAX);
+  /** 분석일 필터: N일 이내만 표시 (ANALYSIS_DAYS_MAX = MAX) */
+  const [analysisWithin, setAnalysisWithin] = useState(ANALYSIS_DAYS_MAX);
 
   const [openMenu, setOpenMenu] = useState<FilterMenu>(null);
   const [popoverPos, setPopoverPos] = useState<PopoverPos | null>(null);
@@ -154,17 +165,18 @@ export default function MockDataTable({
   const langTriggerRef = useRef<HTMLButtonElement>(null);
   const viewsTriggerRef = useRef<HTMLButtonElement>(null);
   const elapsedTriggerRef = useRef<HTMLButtonElement>(null);
+  const analysisTriggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
   const languageOptions = useMemo(() => {
-    const set = new Set(mockMozaicData.map((r) => r.language));
+    const set = new Set(allRows.map((r) => r.language));
     return Array.from(set).sort();
-  }, []);
+  }, [allRows]);
 
   const placePopover = useCallback((menu: Exclude<FilterMenu, null>, el: HTMLElement | null) => {
     if (!el) return;
     const r = el.getBoundingClientRect();
-    const minW = menu === "views" ? 320 : menu === "elapsed" ? 300 : 220;
+    const minW = menu === "views" ? 320 : menu === "elapsed" || menu === "analysisDate" ? 300 : 220;
     setPopoverPos({
       top: r.bottom + 6,
       left: clamp(r.left, 8, typeof window !== "undefined" ? window.innerWidth - minW - 8 : r.left),
@@ -195,7 +207,9 @@ export default function MockDataTable({
           ? langTriggerRef.current
           : openMenu === "views"
             ? viewsTriggerRef.current
-            : elapsedTriggerRef.current;
+            : openMenu === "elapsed"
+              ? elapsedTriggerRef.current
+              : analysisTriggerRef.current;
       placePopover(openMenu, ref);
     };
     window.addEventListener("resize", handler);
@@ -222,6 +236,7 @@ export default function MockDataTable({
       if (langTriggerRef.current?.contains(t)) return;
       if (viewsTriggerRef.current?.contains(t)) return;
       if (elapsedTriggerRef.current?.contains(t)) return;
+      if (analysisTriggerRef.current?.contains(t)) return;
       setOpenMenu(null);
       setPopoverPos(null);
     }
@@ -248,20 +263,25 @@ export default function MockDataTable({
     const dlow = clamp(Math.min(dMin, dMax), 0, D_PLUS_INPUT_MAX);
     const dhigh = clamp(Math.max(dMin, dMax), 0, D_PLUS_INPUT_MAX);
 
-    let list: MockMozaicRow[] = mockMozaicData.filter((row) => {
+    let list: MockMozaicRow[] = allRows.filter((row) => {
       const textOk =
         !q ||
         row.title.toLowerCase().includes(q) ||
         row.description.toLowerCase().includes(q) ||
         row.script.toLowerCase().includes(q) ||
         row.language.toLowerCase().includes(q) ||
-        row.contentType.toLowerCase().includes(q);
+        row.contentType.toLowerCase().includes(q) ||
+        (row.createdAt ? formatDate(row.createdAt).toLowerCase().includes(q) : false);
       if (!textOk) return false;
       if (row.views < vminEff) return false;
       if (Number.isFinite(vmaxEff) && row.views > vmaxEff) return false;
       if (languageFilter !== "all" && row.language !== languageFilter) return false;
       const days = getUploadElapsedDays(row.date, asOf);
       if (days < dlow || days > dhigh) return false;
+      if (analysisWithin < ANALYSIS_DAYS_MAX && row.createdAt) {
+        const analysisAge = getUploadElapsedDays(row.createdAt, asOf);
+        if (analysisAge > analysisWithin) return false;
+      }
       return true;
     });
 
@@ -276,7 +296,7 @@ export default function MockDataTable({
       return sortKey === "date_desc" ? -cmp : cmp;
     });
     return list;
-  }, [search, sortKey, viewsMin, viewsMax, languageFilter, dMin, dMax, asOf]);
+  }, [allRows, search, sortKey, viewsMin, viewsMax, languageFilter, dMin, dMax, analysisWithin, asOf]);
 
   const allVisibleIds = filteredSorted.map((r) => r.id);
   const allSelected =
@@ -367,6 +387,7 @@ export default function MockDataTable({
   const langActive = languageFilter !== "all";
   const viewsActive = vminEff > 0 || Number.isFinite(viewsMax);
   const dActive = dlow > 0 || dhigh < D_PLUS_INPUT_MAX;
+  const analysisActive = analysisWithin < ANALYSIS_DAYS_MAX;
 
   const panel =
     openMenu && popoverPos ? (
@@ -538,6 +559,43 @@ export default function MockDataTable({
             </button>
           </div>
         )}
+
+        {openMenu === "analysisDate" && (
+          <div className="space-y-3">
+            <p className="text-xs font-medium text-zinc-600">
+              분석일 — 최근 N일 이내
+            </p>
+            <p className="text-sm font-semibold text-zinc-800">
+              {analysisWithin >= ANALYSIS_DAYS_MAX ? (
+                <span className="text-blue-600">MAX (전체)</span>
+              ) : (
+                <span>{analysisWithin}일 이내</span>
+              )}
+            </p>
+            <input
+              type="range"
+              min={1}
+              max={ANALYSIS_DAYS_MAX}
+              step={1}
+              value={analysisWithin}
+              onChange={(e) => setAnalysisWithin(Number(e.target.value))}
+              className="w-full accent-blue-600"
+              aria-label="분석일 N일 이내 필터"
+            />
+            <div className="flex justify-between text-[10px] text-zinc-400">
+              <span>1일</span>
+              <span>50일</span>
+              <span className="text-blue-500">100일 (MAX)</span>
+            </div>
+            <button
+              type="button"
+              className="btn text-xs"
+              onClick={() => setAnalysisWithin(ANALYSIS_DAYS_MAX)}
+            >
+              초기화
+            </button>
+          </div>
+        )}
       </div>
     ) : null;
 
@@ -549,15 +607,14 @@ export default function MockDataTable({
         <div>
           <h2 className="text-lg font-semibold text-zinc-900">Mock 데이터 테이블</h2>
           <p className="mt-1 text-xs text-zinc-600">
-            <code className="font-mono-ui text-blue-600">mockMozaicData</code> 기반 ·{" "}
+            Mozaic API 데이터 ·{" "}
             <span className="text-zinc-800">언어 / 조회수 / 업로드 경과</span> 열 제목을 누르면 필터 · 검색·정렬과
             함께 AND 적용
           </p>
           {showOptimizeFieldToggles && (
             <p className="mt-2 text-xs text-zinc-600">
               열 이름 옆 <span className="text-blue-600">체크</span>는{" "}
-              <span className="text-zinc-800">W 최적화 실행</span> 시 Supabase{" "}
-              <code className="font-mono-ui text-blue-600">datasets</code> 히스토리 문자열에 포함할 항목입니다.
+              <span className="text-zinc-800">W 최적화 실행</span> 시 히스토리 문자열에 포함할 항목입니다.
               체크 해제 시 해당 열은 최적화 입력에서 빠집니다.
             </p>
           )}
@@ -596,7 +653,7 @@ export default function MockDataTable({
       </div>
 
       <div ref={scrollAreaRef} className="overflow-x-auto rounded-xl border border-zinc-200">
-        <table className="w-full min-w-[1180px] text-left text-sm">
+        <table className="w-full min-w-[1320px] text-left text-sm">
           <thead className="bg-zinc-100 text-zinc-700">
             <tr>
               <th className="w-10 px-3 py-3">
@@ -726,17 +783,6 @@ export default function MockDataTable({
                   <span>좋아요율</span>
                 </div>
               </th>
-              <th className="whitespace-nowrap px-3 py-3 font-medium">
-                <div className="flex items-center gap-2">
-                  <OptimizeFieldToggle
-                    field="uploadDate"
-                    show={showOptimizeFieldToggles}
-                    include={optimizeFieldInclude}
-                    onChange={onOptimizeFieldIncludeChange}
-                  />
-                  <span>업로드 일시</span>
-                </div>
-              </th>
               <th className="whitespace-nowrap px-2 py-3 font-medium">
                 <div className="flex items-center gap-2">
                   <OptimizeFieldToggle
@@ -763,10 +809,36 @@ export default function MockDataTable({
                   </button>
                 </div>
               </th>
+              <th className="whitespace-nowrap px-2 py-3 font-medium">
+                <div className="flex items-center gap-2">
+                  <OptimizeFieldToggle
+                    field="createdAt"
+                    show={showOptimizeFieldToggles}
+                    include={optimizeFieldInclude}
+                    onChange={onOptimizeFieldIncludeChange}
+                  />
+                  <button
+                    ref={analysisTriggerRef}
+                    type="button"
+                    data-filter-trigger
+                    onClick={() => openFilter("analysisDate", analysisTriggerRef.current)}
+                    className={`inline-flex max-w-full items-center rounded-md px-1 py-0.5 text-left transition hover:bg-zinc-100 hover:text-zinc-900 ${
+                      analysisActive ? "text-zinc-900" : ""
+                    }`}
+                    aria-expanded={openMenu === "analysisDate"}
+                  >
+                    분석일
+                    <FilterDot on={analysisActive} />
+                    <span className="ml-0.5 text-[10px] text-zinc-600" aria-hidden>
+                      ▾
+                    </span>
+                  </button>
+                </div>
+              </th>
             </tr>
             {showOptimizeFieldToggles && optimizeFieldInclude && onOptimizeFieldIncludeChange && (
               <tr className="border-t border-zinc-200 bg-zinc-50">
-                <th colSpan={11} className="px-3 py-2 text-left text-xs font-normal text-zinc-600">
+                <th colSpan={12} className="px-3 py-2 text-left text-xs font-normal text-zinc-600">
                   <span className="mr-3 text-zinc-600">Supabase 행 직렬화 시 포함 (DB 전용):</span>
                   <label className="mr-4 inline-flex cursor-pointer items-center gap-2 text-zinc-800">
                     <input
@@ -793,7 +865,7 @@ export default function MockDataTable({
           <tbody>
             {filteredSorted.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-3 py-8 text-center text-zinc-600">
+                <td colSpan={12} className="px-3 py-8 text-center text-zinc-600">
                   검색 결과가 없습니다.
                 </td>
               </tr>
@@ -814,12 +886,18 @@ export default function MockDataTable({
                       aria-label={`${row.title} 선택`}
                     />
                   </td>
-                  <td className="max-w-[140px] px-3 py-2 align-top font-medium text-zinc-900">{row.title}</td>
-                  <td className="max-w-md px-3 py-2 align-top text-zinc-600">{row.description}</td>
-                  <td className="max-w-xs px-3 py-2 align-top text-sm text-zinc-600">{row.script}</td>
+                  <td className="max-w-[140px] px-3 py-2 align-top font-medium text-zinc-900">
+                    <div className="line-clamp-2">{row.title}</div>
+                  </td>
+                  <td className="max-w-[200px] px-3 py-2 align-top text-zinc-600">
+                    <div className="line-clamp-2">{row.description}</div>
+                  </td>
+                  <td className="max-w-[180px] px-3 py-2 align-top text-sm text-zinc-600">
+                    <div className="line-clamp-2">{row.script}</div>
+                  </td>
                   <td className="whitespace-nowrap px-3 py-2 align-top text-zinc-700">{row.language}</td>
-                  <td className="whitespace-nowrap px-3 py-2 align-top">
-                    <span className="example-pill py-1 text-[11px]">{row.contentType}</span>
+                  <td className="max-w-[120px] px-3 py-2 align-top">
+                    <div className="line-clamp-2 text-[11px]">{row.contentType}</div>
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 align-top font-mono-ui text-zinc-700">
                     {formatViews(row.views)}
@@ -833,11 +911,11 @@ export default function MockDataTable({
                   >
                     {formatLikeRatio(row.likes, row.views)}
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2 align-top text-zinc-600">
-                    {formatDate(row.date)}
-                  </td>
                   <td className="whitespace-nowrap px-3 py-2 align-top font-mono-ui text-zinc-600">
                     {formatUploadDayPlus(row.date, asOf)}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2 align-top text-zinc-500">
+                    {row.createdAt ? formatDate(row.createdAt) : "—"}
                   </td>
                 </tr>
               ))

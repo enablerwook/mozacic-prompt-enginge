@@ -170,7 +170,7 @@ async function callClaude(system: string, user: string) {
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 4000,
       system,
       messages: [{ role: "user", content: user }],
@@ -259,7 +259,7 @@ export async function POST(req: Request) {
     });
 
     if (body.mode === "optimize") {
-      const payload = body.payload ?? {};
+      const payload = (body.payload ?? {}) as { historyLines?: unknown; correlation?: unknown };
       const history = Array.isArray(payload.historyLines)
         ? payload.historyLines.join("\n")
         : "히스토리 없음";
