@@ -302,6 +302,45 @@ export async function POST(req: Request) {
       hasText: typeof body.text === "string" && body.text.trim().length > 0,
     });
 
+    if (body.mode === "batch-score") {
+      // 여러 행을 한 번의 AI 호출로 채점
+      const payload = (body.payload ?? {}) as {
+        rows?: unknown;
+        systemPrompt?: unknown;
+      };
+      const rows = Array.isArray(payload.rows) ? payload.rows as Array<{ id: string; text: string; views?: number; likes?: number }> : [];
+      const wPrompt = typeof payload.systemPrompt === "string" && payload.systemPrompt.trim()
+        ? payload.systemPrompt.trim()
+        : ANALYSIS_SYSTEM_PROMPT;
+      if (rows.length === 0) {
+        return NextResponse.json([], { status: 200 });
+      }
+
+      const rowLines = rows.map((r, i) =>
+        `${i + 1}. [id=${r.id}] 설명: ${r.text} | 조회수: ${r.views ?? 0} | 좋아요: ${r.likes ?? 0}`
+      ).join("\n");
+
+      const batchSystem = `${wPrompt}\n\n당신은 위 기준으로 숏폼 영상을 채점하는 분석기입니다.`;
+      const batchUser = `아래 영상 목록 각각에 대해 위 기준으로 훅 점수(score)와 판정(verdict)을 계산하세요.
+score 규칙: s_total(0-10)×0.4 + r_total(0-10)×0.3 + e_total(0-10)×0.3, 소수점 1자리
+verdict: "강력한 훅"(≥6) / "보통 훅"(3-5.9) / "약한 훅"(1-2.9) / "훅 없음"(<1)
+
+반드시 JSON 배열로만 응답 (마크다운 금지):
+[{"id":"...","score":0.0,"verdict":"..."}]
+
+영상 목록:
+${rowLines}`;
+
+      const useGemini = body.ai === "gemini";
+      const geminiModel = resolveGeminiModel(body.geminiVersion);
+      const batchText = useGemini
+        ? await callGemini(batchSystem, batchUser, geminiModel)
+        : await callClaude(batchSystem, batchUser);
+
+      const parsed = safeParse<Array<{ id: string; score: number; verdict: string }>>(batchText);
+      return NextResponse.json(parsed ?? [], { status: 200 });
+    }
+
     if (body.mode === "optimize") {
       const payload = (body.payload ?? {}) as { historyLines?: unknown; correlation?: unknown; currentW?: unknown };
       const history = Array.isArray(payload.historyLines)

@@ -132,37 +132,59 @@ export default function OptimizePage() {
     const rounds = Math.max(1, Math.min(repeatCount, 10));
     let iterW = currentW.trim() || null;
 
-    // ── Phase 1: 각 영상을 현재 W로 실제 채점 ──────────────────────
+    // ── Phase 1: 배치+병렬 채점 ─────────────────────────────────────
+    const BATCH_SIZE = 15;   // 한 번의 AI 호출로 처리할 행 수
+    const MAX_PARALLEL = 3;  // 동시에 실행할 배치 수
+
     const scoreMap = new Map<string, HookScoreEntry>();
+    const batches: (typeof targetRows)[] = [];
+    for (let i = 0; i < targetRows.length; i += BATCH_SIZE) {
+      batches.push(targetRows.slice(i, i + BATCH_SIZE));
+    }
     setScoreProgress({ current: 0, total: targetRows.length });
 
-    for (let i = 0; i < targetRows.length; i++) {
+    let scoredCount = 0;
+    for (let bi = 0; bi < batches.length; bi += MAX_PARALLEL) {
       if (abort.signal.aborted) break;
-      const row = targetRows[i];
-      setScoreProgress({ current: i + 1, total: targetRows.length });
-      try {
-        const scoreText = [row.title, row.description].filter(Boolean).join(" | ");
-        const res = await fetch("/api/analyze", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          signal: abort.signal,
-          body: JSON.stringify({
-            text: scoreText,
-            views: row.views,
-            likes: row.likes,
-            systemPrompt: iterW ?? undefined,
-          }),
-        });
-        if (res.ok) {
-          const d = await res.json() as { score?: number; verdict?: string };
-          if (typeof d.score === "number") {
-            scoreMap.set(row.id, { score: d.score, verdict: d.verdict ?? "-" });
+      const chunk = batches.slice(bi, bi + MAX_PARALLEL);
+      await Promise.all(
+        chunk.map(async (batch) => {
+          if (abort.signal.aborted) return;
+          try {
+            const res = await fetch("/api/analyze", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              signal: abort.signal,
+              body: JSON.stringify({
+                mode: "batch-score",
+                ai: aiModel,
+                geminiVersion,
+                payload: {
+                  systemPrompt: iterW ?? undefined,
+                  rows: batch.map((r) => ({
+                    id: r.id,
+                    text: [r.title, r.description].filter(Boolean).join(" | "),
+                    views: r.views,
+                    likes: r.likes,
+                  })),
+                },
+              }),
+            });
+            if (res.ok) {
+              const results = await res.json() as Array<{ id: string; score?: number; verdict?: string }>;
+              for (const d of results) {
+                if (typeof d.score === "number") {
+                  scoreMap.set(d.id, { score: d.score, verdict: d.verdict ?? "-" });
+                }
+              }
+            }
+          } catch (e) {
+            if ((e as Error).name === "AbortError") return;
           }
-        }
-      } catch (e) {
-        if ((e as Error).name === "AbortError") break;
-        // 채점 실패 시 해당 행은 "-"로 유지
-      }
+          scoredCount += batch.length;
+          setScoreProgress({ current: Math.min(scoredCount, targetRows.length), total: targetRows.length });
+        })
+      );
     }
     setScoreProgress(null);
 
