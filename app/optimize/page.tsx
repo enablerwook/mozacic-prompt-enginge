@@ -32,6 +32,7 @@ export default function OptimizePage() {
   const [saveNameInput, setSaveNameInput] = useState("");
   const [showSaved, setShowSaved] = useState(false);
   const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>([]);
+  const [aiModel, setAiModel] = useState<"claude" | "gemini">("claude");
   const [asOfHistory] = useState(() => new Date());
   const [optimizeFields, setOptimizeFields] = useState<Record<OptimizeContextField, boolean>>(
     () => ({ ...DEFAULT_OPTIMIZE_FIELDS })
@@ -103,6 +104,7 @@ export default function OptimizePage() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         mode: "optimize",
+        ai: aiModel,
         payload: {
           correlation: stats.corr,
           currentW: currentW.trim() || null,
@@ -225,9 +227,35 @@ export default function OptimizePage() {
         상태: {correlationLabel(stats.corr)}
       </section>
 
-      <button className="btn" onClick={runOptimize} disabled={loading || rows.length < 2}>
-        {loading ? "최적화 중..." : "⚡ W 최적화 실행"}
-      </button>
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex rounded-lg border border-zinc-200 overflow-hidden text-sm font-medium">
+          <button
+            type="button"
+            onClick={() => setAiModel("claude")}
+            className={`px-4 py-2 transition ${
+              aiModel === "claude"
+                ? "bg-zinc-900 text-white"
+                : "bg-white text-zinc-600 hover:bg-zinc-50"
+            }`}
+          >
+            Claude
+          </button>
+          <button
+            type="button"
+            onClick={() => setAiModel("gemini")}
+            className={`px-4 py-2 border-l border-zinc-200 transition ${
+              aiModel === "gemini"
+                ? "bg-zinc-900 text-white"
+                : "bg-white text-zinc-600 hover:bg-zinc-50"
+            }`}
+          >
+            Gemini
+          </button>
+        </div>
+        <button className="btn" onClick={runOptimize} disabled={loading || rows.length < 2}>
+          {loading ? "최적화 중..." : "⚡ W 최적화 실행"}
+        </button>
+      </div>
 
       {result && (
         <section className="card space-y-3 border border-blue-200 bg-blue-50/30 p-5">

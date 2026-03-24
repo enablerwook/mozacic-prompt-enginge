@@ -158,6 +158,33 @@ ${history}
 "영상: {묘사} | 훅점수: {score} | 조회수: {views} | 판정: {verdict}"`;
 }
 
+async function callGemini(system: string, user: string) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new ApiError("GEMINI_API_KEY가 설정되지 않았습니다.", 500);
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: user }] }],
+        generationConfig: { responseMimeType: "application/json" },
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new ApiError(`Gemini 오류: ${res.status}`, 502, text);
+  }
+  const json = await res.json() as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  };
+  return json.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+}
+
 async function callClaude(system: string, user: string) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -232,6 +259,7 @@ export async function POST(req: Request) {
   try {
     let body: {
       mode?: string;
+      ai?: string;
       text?: unknown;
       views?: unknown;
       likes?: unknown;
@@ -242,6 +270,7 @@ export async function POST(req: Request) {
     try {
       body = (await req.json()) as {
         mode?: string;
+        ai?: string;
         text?: unknown;
         views?: unknown;
         likes?: unknown;
@@ -274,7 +303,10 @@ export async function POST(req: Request) {
         ? payload.currentW.trim()
         : null;
       const user = buildOptimizeUserPrompt(history, correlation, currentW);
-      const text = await callClaude(optimizeSystemPrompt, user);
+      const useGemini = body.ai === "gemini";
+      const text = useGemini
+        ? await callGemini(optimizeSystemPrompt, user)
+        : await callClaude(optimizeSystemPrompt, user);
       const parsed = safeParse<OptimizeResult>(text);
       if (!parsed) {
         return NextResponse.json(
