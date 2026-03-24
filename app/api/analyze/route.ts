@@ -115,10 +115,13 @@ function normalizeAnalyzeResult(input?: Partial<AnalyzeResult> | null): AnalyzeR
   };
 }
 
-function buildOptimizeUserPrompt(history: string, correlation: string) {
+function buildOptimizeUserPrompt(history: string, correlation: string, currentW: string | null) {
+  const wSection = currentW
+    ? `현재 W 프롬프트 전문:\n"""\n${currentW}\n"""\n\n`
+    : "";
   return `당신은 숏폼 영상 분석 프롬프트를 최적화하는 메타 엔지니어입니다.
 
-아래는 현재 분석 프롬프트(W)로 여러 영상을 분석한 결과입니다.
+${wSection}아래는 현재 분석 프롬프트(W)로 여러 영상을 분석한 결과입니다.
 각 영상에는 "훅 점수"(W가 매긴 점수)와 "실제 조회수"가 있습니다.
 
 핵심 원칙:
@@ -128,7 +131,7 @@ function buildOptimizeUserPrompt(history: string, correlation: string) {
 
 현재 W의 분석 프레임:
 - 생존 자극 (위협감지 0-3, 손실공포 0-3, 불확실성 0-4)
-- 번식 자극 (신체적매력 0-4, 지위/자원 0-3, 사회적매력 0-3)  
+- 번식 자극 (신체적매력 0-4, 지위/자원 0-3, 사회적매력 0-3)
 - 감정 강도 (유발속도 0-3, 감정명확성 0-3, 강도 0-4)
 - 가중치: 생존×0.4 + 번식×0.3 + 감정×0.3
 
@@ -259,7 +262,7 @@ export async function POST(req: Request) {
     });
 
     if (body.mode === "optimize") {
-      const payload = (body.payload ?? {}) as { historyLines?: unknown; correlation?: unknown };
+      const payload = (body.payload ?? {}) as { historyLines?: unknown; correlation?: unknown; currentW?: unknown };
       const history = Array.isArray(payload.historyLines)
         ? payload.historyLines.join("\n")
         : "히스토리 없음";
@@ -267,7 +270,10 @@ export async function POST(req: Request) {
         payload.correlation === null || payload.correlation === undefined
           ? "N/A"
           : String(payload.correlation);
-      const user = buildOptimizeUserPrompt(history, correlation);
+      const currentW = typeof payload.currentW === "string" && payload.currentW.trim()
+        ? payload.currentW.trim()
+        : null;
+      const user = buildOptimizeUserPrompt(history, correlation, currentW);
       const text = await callClaude(optimizeSystemPrompt, user);
       const parsed = safeParse<OptimizeResult>(text);
       if (!parsed) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import MockDataTable from "@/components/optimize/MockDataTable";
 import { ANALYSIS_SYSTEM_PROMPT } from "@/lib/analyzer";
 import { mockMozaicData, type MockMozaicRow } from "@/lib/mockMozaicData";
@@ -9,6 +9,12 @@ import {
   W_PROMPT_STORAGE_KEY,
   W_VERSION_STORAGE_KEY,
 } from "@/lib/wPrompt";
+import {
+  loadSavedPrompts,
+  savePrompt,
+  deletePrompt,
+  type SavedPrompt,
+} from "@/lib/savedPrompts";
 
 type MockSimRow = {
   id: string;
@@ -45,6 +51,9 @@ export default function AnalyzePage() {
   const [wVersion, setWVersion] = useState(0);
   const [mounted, setMounted] = useState(false);
 
+  const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>([]);
+  const [saveNameInput, setSaveNameInput] = useState("");
+  const [showSaved, setShowSaved] = useState(false);
   const [simRunning, setSimRunning] = useState(false);
   const [simProgress, setSimProgress] = useState({ current: 0, total: 0 });
   const [mockResults, setMockResults] = useState<MockSimRow[] | null>(null);
@@ -57,6 +66,7 @@ export default function AnalyzePage() {
       if (stored?.trim()) setManualPrompt(stored);
       else setManualPrompt(ANALYSIS_SYSTEM_PROMPT);
       if (!Number.isNaN(ver)) setWVersion(ver);
+      setSavedPrompts(loadSavedPrompts());
       setMounted(true);
     });
   }, []);
@@ -78,6 +88,23 @@ export default function AnalyzePage() {
     setManualPrompt(ANALYSIS_SYSTEM_PROMPT);
     setWVersion(0);
   }
+
+  const handleSavePrompt = useCallback(() => {
+    if (!manualPrompt.trim()) return;
+    const next = savePrompt(saveNameInput, manualPrompt);
+    setSavedPrompts(next);
+    setSaveNameInput("");
+    setShowSaved(true);
+  }, [manualPrompt, saveNameInput]);
+
+  const handleDeletePrompt = useCallback((id: string) => {
+    setSavedPrompts(deletePrompt(id));
+  }, []);
+
+  const handleLoadPrompt = useCallback((p: SavedPrompt) => {
+    setManualPrompt(p.prompt);
+    setShowSaved(false);
+  }, []);
 
   async function runSimulation() {
     if (!manualPrompt.trim() || selectedRows.length === 0) return;
@@ -137,12 +164,75 @@ export default function AnalyzePage() {
         />
         <div className="flex flex-wrap gap-2">
           <button type="button" className="btn text-sm" onClick={loadStoredW}>
-            저장된 W 불러오기
+            최적화된 W 불러오기
           </button>
           <button type="button" className="btn text-sm" onClick={resetDefaultPrompt}>
             기본 프롬프트로 초기화
           </button>
         </div>
+
+        {/* 저장 입력 */}
+        <div className="flex gap-2 pt-1">
+          <input
+            className="input flex-1 text-sm"
+            placeholder="저장할 이름 (비워두면 자동 생성)"
+            value={saveNameInput}
+            onChange={(e) => setSaveNameInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSavePrompt()}
+          />
+          <button
+            type="button"
+            className="btn text-sm"
+            onClick={handleSavePrompt}
+            disabled={!manualPrompt.trim()}
+          >
+            💾 저장
+          </button>
+          <button
+            type="button"
+            className="btn text-sm"
+            onClick={() => setShowSaved((v) => !v)}
+          >
+            📂 목록 {savedPrompts.length > 0 && `(${savedPrompts.length})`}
+          </button>
+        </div>
+
+        {/* 저장된 프롬프트 목록 */}
+        {showSaved && (
+          <div className="rounded-xl border border-zinc-200 bg-zinc-50">
+            {savedPrompts.length === 0 ? (
+              <p className="px-4 py-4 text-sm text-zinc-500">저장된 프롬프트가 없습니다.</p>
+            ) : (
+              <ul className="divide-y divide-zinc-100 max-h-64 overflow-y-auto">
+                {savedPrompts.map((p) => (
+                  <li key={p.id} className="flex items-center gap-3 px-4 py-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-zinc-800">{p.name}</p>
+                      <p className="truncate text-xs text-zinc-400">
+                        {new Date(p.savedAt).toLocaleString("ko-KR")} · {p.prompt.length}자
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn text-xs"
+                      onClick={() => handleLoadPrompt(p)}
+                    >
+                      불러오기
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-md px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-200 hover:text-red-600 transition"
+                      onClick={() => handleDeletePrompt(p.id)}
+                      aria-label="삭제"
+                    >
+                      ✕
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </section>
 
       <MockDataTable
