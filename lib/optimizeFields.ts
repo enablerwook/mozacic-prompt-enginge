@@ -5,6 +5,7 @@ export type OptimizeContextField =
   | "title"
   | "description"
   | "script"
+  | "createdAt"
   | "language"
   | "contentType"
   | "views"
@@ -13,13 +14,13 @@ export type OptimizeContextField =
   | "uploadDate"
   | "elapsed"
   | "hookScore"
-  | "verdict"
-  | "createdAt";
+  | "verdict";
 
 export const DEFAULT_OPTIMIZE_FIELDS: Record<OptimizeContextField, boolean> = {
   title: true,
   description: true,
   script: true,
+  createdAt: false,
   language: true,
   contentType: true,
   views: true,
@@ -29,7 +30,6 @@ export const DEFAULT_OPTIMIZE_FIELDS: Record<OptimizeContextField, boolean> = {
   elapsed: true,
   hookScore: true,
   verdict: true,
-  createdAt: false,
 };
 
 /** MockMozaicRow를 최적화 API용 한 줄로 직렬화 (체크된 필드만 포함) */
@@ -49,6 +49,9 @@ export function buildOptimizeHistoryLine(
   if (include.script) {
     const scriptPreview = r.script ? r.script.slice(0, 200) : "-";
     parts.push(`스크립트: ${scriptPreview}`);
+  }
+  if (include.createdAt && r.createdAt) {
+    parts.push(`분석일시: ${r.createdAt.slice(0, 16).replace("T", " ")}`);
   }
   if (include.language) {
     parts.push(`플랫폼: ${r.language || "-"}`);
@@ -72,9 +75,6 @@ export function buildOptimizeHistoryLine(
   if (include.elapsed) {
     const days = r.elapsedDays ?? getUploadElapsedDays(r.date, asOf);
     parts.push(`경과: D+${days}`);
-  }
-  if (include.createdAt && r.createdAt) {
-    parts.push(`분석일시: ${r.createdAt.slice(0, 16).replace("T", " ")}`);
   }
   if (include.hookScore) {
     parts.push(`훅점수: -`);

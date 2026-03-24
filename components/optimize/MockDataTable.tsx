@@ -702,6 +702,32 @@ export default function MockDataTable({
               <th className="whitespace-nowrap px-2 py-3 font-medium">
                 <div className="flex items-center gap-2">
                   <OptimizeFieldToggle
+                    field="createdAt"
+                    show={showOptimizeFieldToggles}
+                    include={optimizeFieldInclude}
+                    onChange={onOptimizeFieldIncludeChange}
+                  />
+                  <button
+                    ref={analysisTriggerRef}
+                    type="button"
+                    data-filter-trigger
+                    onClick={() => openFilter("analysisDate", analysisTriggerRef.current)}
+                    className={`inline-flex max-w-full items-center rounded-md px-1 py-0.5 text-left transition hover:bg-zinc-100 hover:text-zinc-900 ${
+                      analysisActive ? "text-zinc-900" : ""
+                    }`}
+                    aria-expanded={openMenu === "analysisDate"}
+                  >
+                    분석일
+                    <FilterDot on={analysisActive} />
+                    <span className="ml-0.5 text-[10px] text-zinc-600" aria-hidden>
+                      ▾
+                    </span>
+                  </button>
+                </div>
+              </th>
+              <th className="whitespace-nowrap px-2 py-3 font-medium">
+                <div className="flex items-center gap-2">
+                  <OptimizeFieldToggle
                     field="language"
                     show={showOptimizeFieldToggles}
                     include={optimizeFieldInclude}
@@ -810,32 +836,6 @@ export default function MockDataTable({
                   </button>
                 </div>
               </th>
-              <th className="whitespace-nowrap px-2 py-3 font-medium">
-                <div className="flex items-center gap-2">
-                  <OptimizeFieldToggle
-                    field="createdAt"
-                    show={showOptimizeFieldToggles}
-                    include={optimizeFieldInclude}
-                    onChange={onOptimizeFieldIncludeChange}
-                  />
-                  <button
-                    ref={analysisTriggerRef}
-                    type="button"
-                    data-filter-trigger
-                    onClick={() => openFilter("analysisDate", analysisTriggerRef.current)}
-                    className={`inline-flex max-w-full items-center rounded-md px-1 py-0.5 text-left transition hover:bg-zinc-100 hover:text-zinc-900 ${
-                      analysisActive ? "text-zinc-900" : ""
-                    }`}
-                    aria-expanded={openMenu === "analysisDate"}
-                  >
-                    분석일
-                    <FilterDot on={analysisActive} />
-                    <span className="ml-0.5 text-[10px] text-zinc-600" aria-hidden>
-                      ▾
-                    </span>
-                  </button>
-                </div>
-              </th>
             </tr>
             {showOptimizeFieldToggles && optimizeFieldInclude && onOptimizeFieldIncludeChange && (
               <tr className="border-t border-zinc-200 bg-zinc-50">
@@ -898,6 +898,9 @@ export default function MockDataTable({
                   <td className="max-w-[180px] px-3 py-2 align-top text-sm text-zinc-600">
                     <div className="line-clamp-2">{row.script}</div>
                   </td>
+                  <td className="whitespace-nowrap px-3 py-2 align-top text-zinc-500">
+                    {row.createdAt ? formatDate(row.createdAt) : "—"}
+                  </td>
                   <td className="whitespace-nowrap px-3 py-2 align-top text-zinc-700">{row.language}</td>
                   <td className="max-w-[120px] px-3 py-2 align-top">
                     <div className="line-clamp-2 text-[11px]">{row.contentType}</div>
@@ -916,9 +919,6 @@ export default function MockDataTable({
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 align-top font-mono-ui text-zinc-600">
                     {formatUploadDayPlus(row.date, asOf)}
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-2 align-top text-zinc-500">
-                    {row.createdAt ? formatDate(row.createdAt) : "—"}
                   </td>
                 </tr>
               ))
