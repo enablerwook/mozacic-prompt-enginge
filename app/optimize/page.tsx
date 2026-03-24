@@ -272,6 +272,53 @@ export default function OptimizePage() {
           : null;
         setHookCorrHistory((prev) => [...prev, lastHookCorr]);
 
+        // ── 오답 노트: 엣지 케이스 추출 ─────────────────────────────
+        // 데이터가 6개 이상일 때만 추출 (그 미만은 의미 있는 상·하위 25% 구분 불가)
+        type EdgeCase = { proxyText: string; aiScore: number; verdict: string; views: number } | null;
+        let falsePositive: EdgeCase = null; // 과대평가: 점수 높은데 조회수 낮음
+        let falseNegative: EdgeCase = null; // 과소평가: 점수 낮은데 조회수 높음
+
+        if (scoredRows.length >= 6) {
+          const n = scoredRows.length;
+          const threshold = Math.max(1, Math.floor(n * 0.25)); // 상·하위 25% 기준 인원 수
+
+          // 점수 순위 (0 = 가장 높은 점수) / 조회수 순위 (0 = 가장 많은 조회수)
+          const byScore = [...scoredRows].sort((a, b) => (scoreMap.get(b.id)?.score ?? 0) - (scoreMap.get(a.id)?.score ?? 0));
+          const byViews = [...scoredRows].sort((a, b) => b.views - a.views);
+          const scoreRankMap = new Map(byScore.map((r, idx) => [r.id, idx]));
+          const viewsRankMap = new Map(byViews.map((r, idx) => [r.id, idx]));
+
+          // False Positive: 점수 상위 25% & 조회수 하위 25% → AI가 과대평가한 케이스
+          const fpRow = scoredRows
+            .filter((r) => scoreRankMap.get(r.id)! < threshold && viewsRankMap.get(r.id)! >= n - threshold)
+            // 괴리가 클수록(조회수 순위 - 점수 순위가 클수록) 앞에 오도록 정렬
+            .sort((a, b) => (viewsRankMap.get(b.id)! - scoreRankMap.get(b.id)!) - (viewsRankMap.get(a.id)! - scoreRankMap.get(a.id)!))[0] ?? null;
+          if (fpRow) {
+            const entry = scoreMap.get(fpRow.id)!;
+            falsePositive = {
+              proxyText: [fpRow.title, fpRow.description].filter(Boolean).join(" | "),
+              aiScore: entry.score,
+              verdict: entry.verdict,
+              views: fpRow.views,
+            };
+          }
+
+          // False Negative: 조회수 상위 25% & 점수 하위 25% → AI가 과소평가한 케이스
+          const fnRow = scoredRows
+            .filter((r) => viewsRankMap.get(r.id)! < threshold && scoreRankMap.get(r.id)! >= n - threshold)
+            // 괴리가 클수록(점수 순위 - 조회수 순위가 클수록) 앞에 오도록 정렬
+            .sort((a, b) => (scoreRankMap.get(b.id)! - viewsRankMap.get(b.id)!) - (scoreRankMap.get(a.id)! - viewsRankMap.get(a.id)!))[0] ?? null;
+          if (fnRow) {
+            const entry = scoreMap.get(fnRow.id)!;
+            falseNegative = {
+              proxyText: [fnRow.title, fnRow.description].filter(Boolean).join(" | "),
+              aiScore: entry.score,
+              verdict: entry.verdict,
+              views: fnRow.views,
+            };
+          }
+        }
+
         // ── 최적화: 채점 결과로 W 개선 ─────────────────────────────
         setTotalProgress({ current: completedSteps, total: totalSteps, label: `${i}/${rounds}회차 최적화 중…` });
 
@@ -309,6 +356,9 @@ export default function OptimizePage() {
               correlation: lastHookCorr ?? stats.corr,
               currentW: iterW,
               historyLines,
+              // 오답 노트: 엣지 케이스가 없으면 null → API에서 기존 방식으로 폴백
+              falsePositive,
+              falseNegative,
             },
           }),
         });

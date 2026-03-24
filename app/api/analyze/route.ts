@@ -115,10 +115,78 @@ function normalizeAnalyzeResult(input?: Partial<AnalyzeResult> | null): AnalyzeR
   };
 }
 
-function buildOptimizeUserPrompt(history: string, correlation: string, currentW: string | null) {
+// 오답 노트에 사용될 엣지 케이스 타입
+type EdgeCase = {
+  proxyText: string;
+  aiScore: number;
+  verdict: string;
+  views: number;
+} | null;
+
+function buildOptimizeUserPrompt(
+  history: string,
+  correlation: string,
+  currentW: string | null,
+  // [오답 노트] 엣지 케이스 파라미터 (없으면 null → 기존 상관계수 방식으로 폴백)
+  falsePositive: EdgeCase = null,
+  falseNegative: EdgeCase = null,
+) {
   const wSection = currentW
     ? `현재 W 프롬프트 전문:\n"""\n${currentW}\n"""\n\n`
     : "";
+
+  // [오답 노트] FP/FN 케이스가 하나라도 있으면 메타-프롬프트 방식으로 전환
+  const hasEdgeCases = falsePositive !== null || falseNegative !== null;
+
+  if (hasEdgeCases) {
+    // ── 오답 노트 기반 메타-프롬프팅 ────────────────────────────────────────
+    // AI에게 자신이 무엇을 틀렸는지 구체적 사례를 보여주고 수정을 유도
+    const fpSection = falsePositive
+      ? `
+【과대평가 사례 (False Positive)】
+당신은 이 영상에 높은 점수(${falsePositive.aiScore.toFixed(1)} / 판정: ${falsePositive.verdict})를 줬지만, 실제 조회수는 매우 낮았습니다.
+- 영상 proxy: ${falsePositive.proxyText}
+- 당신의 점수: ${falsePositive.aiScore.toFixed(1)} | 실제 조회수: ${falsePositive.views.toLocaleString()}
+→ 당신이 이 영상에서 높이 평가한 진화심리학적 신호(생존/번식/감정)는 실제로 시청자를 붙잡지 못했습니다.
+   어떤 기준이 잘못 활성화되었는지 분석하고, 해당 기준을 더 정교하게 수정하세요.`
+      : "";
+
+    const fnSection = falseNegative
+      ? `
+【과소평가 사례 (False Negative)】
+당신은 이 영상에 낮은 점수(${falseNegative.aiScore.toFixed(1)} / 판정: ${falseNegative.verdict})를 줬지만, 실제 조회수는 매우 높았습니다.
+- 영상 proxy: ${falseNegative.proxyText}
+- 당신의 점수: ${falseNegative.aiScore.toFixed(1)} | 실제 조회수: ${falseNegative.views.toLocaleString()}
+→ 이 영상에는 시청자를 강하게 끌어당긴 후킹 요소가 있었지만, 당신의 W가 그것을 감지하지 못했습니다.
+   W가 현재 포착하지 못하는 후킹 메커니즘이 무엇인지 진단하고, 이를 채점 기준에 추가하세요.`
+      : "";
+
+    return `당신은 숏폼 영상 분석 프롬프트를 최적화하는 메타 엔지니어입니다.
+
+${wSection}아래는 당신(현재 W)이 실제로 틀린 사례들입니다. 이 오답 노트를 바탕으로 W를 수정하세요.
+
+상관계수 (훅점수 ↔ 조회수): ${correlation}
+${fpSection}
+${fnSection}
+
+분석 히스토리 (전체 맥락):
+${history}
+
+당신의 임무:
+1. 위 오답 사례에서 W의 어떤 채점 기준이 잘못 작동했는지 정확히 진단하세요
+2. False Positive 원인: 어떤 신호를 과도하게 가중했는가
+3. False Negative 원인: 어떤 훅 메커니즘을 W가 아예 감지하지 못했는가
+4. 위 오차를 줄이도록 채점 기준과 가중치를 수정한 새로운 W 프롬프트 전문을 작성하세요
+
+절대 하지 말 것:
+- 영상 콘텐츠에 대한 조언 금지
+- W 프롬프트 개선에만 집중하세요
+
+반드시 JSON으로만 응답 (마크다운 금지):
+{"diagnosis":"W의 문제점 진단 (한국어)","weak_items":"성과 예측에 실패한 항목들","missing_factors":"W가 놓치고 있는 요소들","weight_suggestion":"가중치 조정 제안","prompt":"개선된 완전한 분석 프롬프트 전문 (한국어, 그대로 복사하여 시스템 프롬프트로 사용 가능)","changes":"W₀ 대비 변경사항","version":"W1"}`;
+  }
+
+  // ── 기존 상관계수 기반 방식 (엣지 케이스 없을 때 폴백) ──────────────────────
   return `당신은 숏폼 영상 분석 프롬프트를 최적화하는 메타 엔지니어입니다.
 
 ${wSection}아래는 현재 분석 프롬프트(W)로 여러 영상을 분석한 결과입니다.
@@ -129,12 +197,6 @@ ${wSection}아래는 현재 분석 프롬프트(W)로 여러 영상을 분석한
 - 훅 점수가 높은데 조회수가 낮다면 → W가 과대평가한 것입니다. W의 기준이 잘못된 겁니다.
 - 영상 자체를 평가하지 마세요. W(분석 프롬프트)만 평가하고 개선하세요.
 
-현재 W의 분석 프레임:
-- 생존 자극 (위협감지 0-3, 손실공포 0-3, 불확실성 0-4)
-- 번식 자극 (신체적매력 0-4, 지위/자원 0-3, 사회적매력 0-3)
-- 감정 강도 (유발속도 0-3, 감정명확성 0-3, 강도 0-4)
-- 가중치: 생존×0.4 + 번식×0.3 + 감정×0.3
-
 분석 히스토리:
 ${history}
 
@@ -143,7 +205,7 @@ ${history}
 당신의 임무:
 1. W의 어떤 항목이 실제 성과를 잘못 예측하는지 진단하세요
 2. 놓치고 있는 후킹 요소가 있다면 기존 항목에 통합하세요
-3. 가중치(0.4/0.3/0.3)가 적절한지 평가하세요
+3. 가중치가 적절한지 평가하세요
 4. 개선된 W 프롬프트 전문을 생성하세요
 
 절대 하지 말 것:
@@ -152,10 +214,7 @@ ${history}
 - W 프롬프트 개선에만 집중하세요
 
 반드시 JSON으로만 응답 (마크다운 금지):
-{"diagnosis":"W의 문제점 진단 (한국어)","weak_items":"성과 예측에 실패한 항목들","missing_factors":"W가 놓치고 있는 요소들","weight_suggestion":"가중치 조정 제안","prompt":"개선된 완전한 분석 프롬프트 전문 (한국어, 그대로 복사하여 시스템 프롬프트로 사용 가능)","changes":"W₀ 대비 변경사항","version":"W1"}
-
-히스토리 데이터를 넣을 때 각 항목은 이 형식으로:
-"영상: {묘사} | 훅점수: {score} | 조회수: {views} | 판정: {verdict}"`;
+{"diagnosis":"W의 문제점 진단 (한국어)","weak_items":"성과 예측에 실패한 항목들","missing_factors":"W가 놓치고 있는 요소들","weight_suggestion":"가중치 조정 제안","prompt":"개선된 완전한 분석 프롬프트 전문 (한국어, 그대로 복사하여 시스템 프롬프트로 사용 가능)","changes":"W₀ 대비 변경사항","version":"W1"}`;
 }
 
 const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"] as const;
@@ -529,7 +588,14 @@ ${rowLines}`;
     }
 
     if (body.mode === "optimize") {
-      const payload = (body.payload ?? {}) as { historyLines?: unknown; correlation?: unknown; currentW?: unknown };
+      const payload = (body.payload ?? {}) as {
+        historyLines?: unknown;
+        correlation?: unknown;
+        currentW?: unknown;
+        // [오답 노트] 엣지 케이스 수신
+        falsePositive?: unknown;
+        falseNegative?: unknown;
+      };
       const history = Array.isArray(payload.historyLines)
         ? payload.historyLines.join("\n")
         : "히스토리 없음";
@@ -540,7 +606,26 @@ ${rowLines}`;
       const currentW = typeof payload.currentW === "string" && payload.currentW.trim()
         ? payload.currentW.trim()
         : null;
-      const user = buildOptimizeUserPrompt(history, correlation, currentW);
+
+      // [오답 노트] falsePositive / falseNegative 유효성 검사 후 EdgeCase로 변환
+      // 필드가 하나라도 없거나 타입이 맞지 않으면 null 처리 → 폴백 방식으로 동작
+      function toEdgeCase(raw: unknown): EdgeCase {
+        if (raw === null || raw === undefined || typeof raw !== "object") return null;
+        const obj = raw as Record<string, unknown>;
+        if (typeof obj.proxyText !== "string") return null;
+        if (typeof obj.aiScore !== "number") return null;
+        if (typeof obj.views !== "number") return null;
+        return {
+          proxyText: obj.proxyText,
+          aiScore: obj.aiScore,
+          verdict: typeof obj.verdict === "string" ? obj.verdict : "-",
+          views: obj.views,
+        };
+      }
+      const falsePositive = toEdgeCase(payload.falsePositive);
+      const falseNegative = toEdgeCase(payload.falseNegative);
+
+      const user = buildOptimizeUserPrompt(history, correlation, currentW, falsePositive, falseNegative);
       const useGemini = body.ai === "gemini";
       const geminiModel = resolveGeminiModel(body.geminiVersion);
       // tool_use / responseSchema 방식으로 파싱 실패 원천 차단
