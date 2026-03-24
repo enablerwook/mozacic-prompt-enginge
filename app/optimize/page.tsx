@@ -11,7 +11,7 @@ import {
   type OptimizeContextField,
   type HookScoreEntry,
 } from "@/lib/optimizeFields";
-import { correlationLabel, pearsonCorrelation } from "@/lib/stats";
+import { pearsonCorrelation } from "@/lib/stats";
 import { ANALYSIS_SYSTEM_PROMPT } from "@/lib/analyzer";
 import { W_PROMPT_STORAGE_KEY, W_VERSION_STORAGE_KEY } from "@/lib/wPrompt";
 import {
@@ -240,33 +240,6 @@ export default function OptimizePage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
-      <section className="grid gap-3 md:grid-cols-4">
-        <div className="card p-4">
-          <p className="text-xs text-zinc-500">분석 데이터 수</p>
-          <p className="mt-1 text-xl font-semibold text-zinc-900">{stats.total}</p>
-          {selectedIds.size > 0 && (
-            <p className="text-xs text-blue-600">선택 {selectedIds.size} / 전체 {rows.length}</p>
-          )}
-        </div>
-        <div className="card p-4">
-          <p className="text-xs text-zinc-500">성과 입력 수</p>
-          <p className="mt-1 text-xl font-semibold text-zinc-900">{stats.withPerf}</p>
-          <p className="text-xs text-zinc-400">조회수 &gt; 0</p>
-        </div>
-        <div className="card p-4">
-          <p className="text-xs text-zinc-500">상관계수</p>
-          <p className="mt-1 text-xl font-semibold text-zinc-900">
-            {stats.corr === null ? "—" : stats.corr.toFixed(3)}
-          </p>
-          <p className="text-xs text-zinc-400">좋아요율 ↔ 조회수</p>
-        </div>
-        <div className="card p-4">
-          <p className="text-xs text-zinc-500">포함 필드 수</p>
-          <p className="mt-1 text-xl font-semibold text-zinc-900">{stats.fieldCount}</p>
-          <p className="text-xs text-zinc-400">체크된 항목</p>
-        </div>
-      </section>
-
       <section className="card space-y-3 p-5">
         <h2 className="text-lg font-semibold text-zinc-900">현재 W (분석 프롬프트)</h2>
         <p className="text-xs text-zinc-500">
@@ -324,10 +297,6 @@ export default function OptimizePage() {
         optimizeFieldInclude={optimizeFields}
         onOptimizeFieldIncludeChange={setOptimizeField}
       />
-
-      <section className="card p-5 text-sm text-zinc-600">
-        상태: {correlationLabel(stats.corr)}
-      </section>
 
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-3">
@@ -398,6 +367,34 @@ export default function OptimizePage() {
             </div>
           </div>
         )}
+
+        {/* 통계 카드 */}
+        <div className="grid gap-3 md:grid-cols-4">
+          <div className="card p-4">
+            <p className="text-xs text-zinc-500">분석 데이터 수</p>
+            <p className="mt-1 text-xl font-semibold text-zinc-900">{stats.total}</p>
+            {selectedIds.size > 0 && (
+              <p className="text-xs text-blue-600">선택 {selectedIds.size} / 전체 {rows.length}</p>
+            )}
+          </div>
+          <div className="card p-4">
+            <p className="text-xs text-zinc-500">성과 입력 수</p>
+            <p className="mt-1 text-xl font-semibold text-zinc-900">{stats.withPerf}</p>
+            <p className="text-xs text-zinc-400">조회수 &gt; 0</p>
+          </div>
+          <div className="card p-4">
+            <p className="text-xs text-zinc-500">상관계수</p>
+            <p className="mt-1 text-xl font-semibold text-zinc-900">
+              {stats.corr === null ? "—" : stats.corr.toFixed(3)}
+            </p>
+            <p className="text-xs text-zinc-400">좋아요율 ↔ 조회수</p>
+          </div>
+          <div className="card p-4">
+            <p className="text-xs text-zinc-500">포함 필드 수</p>
+            <p className="mt-1 text-xl font-semibold text-zinc-900">{stats.fieldCount}</p>
+            <p className="text-xs text-zinc-400">체크된 항목</p>
+          </div>
+        </div>
       </div>
 
       {loading && scoreProgress && (
