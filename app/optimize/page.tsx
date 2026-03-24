@@ -243,6 +243,27 @@ export default function OptimizePage() {
     return scoreMap;
   }
 
+  // ── 층화 랜덤 샘플링 헬퍼 ────────────────────────────────────────────────
+  // 조회수 기준 4등분 후 각 구간에서 균등 추출 → 성과 분포 편향 방지
+  function stratifiedSample(pool: typeof targetRows, n: number): typeof targetRows {
+    if (n <= 0 || pool.length === 0) return [];
+    if (n >= pool.length) return [...pool];
+
+    const sorted = [...pool].sort((a, b) => b.views - a.views);
+    const strataCount = 4;
+    const perStratum = Math.ceil(n / strataCount);
+    const strataSize = Math.ceil(sorted.length / strataCount);
+    const sample: typeof targetRows = [];
+
+    for (let s = 0; s < strataCount && sample.length < n; s++) {
+      // 구간 내 랜덤 셔플 → 앞에서 perStratum 개 추출
+      const stratum = sorted.slice(s * strataSize, (s + 1) * strataSize);
+      const shuffled = [...stratum].sort(() => Math.random() - 0.5);
+      sample.push(...shuffled.slice(0, Math.min(perStratum, n - sample.length)));
+    }
+    return sample;
+  }
+
   async function runOptimize() {
     if (rows.length < 2) return;
     setLoading(true);
@@ -256,36 +277,66 @@ export default function OptimizePage() {
     abortRef.current = abort;
 
     const rounds = Math.max(1, Math.min(repeatCount, 10));
-    // Total steps: each round has (targetRows.length scoring steps) + 1 optimization step
-    const totalSteps = rounds * (targetRows.length + 1);
+
+    // 2회차부터 사용할 샘플 크기: 전체의 25% 또는 최소 20행
+    const SAMPLE_SIZE = Math.max(20, Math.ceil(targetRows.length * 0.25));
+
+    // 총 스텝 추정: 1회차는 전체 행, 2회차+는 SAMPLE_SIZE (진행바 계산용)
+    const subRoundRows = Math.min(targetRows.length, SAMPLE_SIZE);
+    const totalSteps = (targetRows.length + 1) + (rounds - 1) * (subRoundRows + 1);
     let completedSteps = 0;
 
     let iterW = currentW.trim() || null;
     let lastResult: OptimizeResult | null = null;
     let lastHookCorr: number | null = null;
 
+    // 이전 회차의 FP/FN 행 ID → 다음 회차에 반드시 포함해서 재채점
+    let mustIncludeIds = new Set<string>();
+
     try {
       for (let i = 1; i <= rounds; i++) {
         if (abort.signal.aborted) break;
 
-        // ── 채점: 현재 iterW로 모든 행 채점 ────────────────────────
+        // ── 채점 대상 행 결정 ───────────────────────────────────────
+        // 1회차: 전체 행 채점 → 베이스라인 상관계수 + FP/FN 확립
+        // 2회차+: 이전 회차 FP/FN(mustIncludeIds) + 층화 랜덤 샘플
+        //         → FP/FN은 반드시 포함해 W가 계속 틀리는지 확인
+        //         → 나머지는 조회수 구간별 균등 샘플링으로 편향 방지
+        let rowsForRound: typeof targetRows;
+        if (i === 1) {
+          rowsForRound = targetRows;
+        } else {
+          const mustRows = targetRows.filter((r) => mustIncludeIds.has(r.id));
+          const remaining = targetRows.filter((r) => !mustIncludeIds.has(r.id));
+          const sampleCount = Math.max(0, SAMPLE_SIZE - mustRows.length);
+          rowsForRound = [...mustRows, ...stratifiedSample(remaining, sampleCount)];
+        }
+
+        // ── 채점 ────────────────────────────────────────────────────
         const baseForRound = completedSteps;
-        setTotalProgress({ current: baseForRound, total: totalSteps, label: `${i}/${rounds}회차 채점 중` });
+        const roundRowCount = rowsForRound.length;
+        setTotalProgress({
+          current: baseForRound,
+          total: totalSteps,
+          label: `${i}/${rounds}회차 채점 중${i > 1 ? ` (샘플 ${roundRowCount}건)` : ` (전체 ${roundRowCount}건)`}`,
+        });
+
         const scoreMap = await scoreRows(
-          targetRows, iterW, abort,
+          rowsForRound, iterW, abort,
           (scored) => {
             setTotalProgress({
               current: baseForRound + scored,
               total: totalSteps,
-              label: `${i}/${rounds}회차 채점 중 — ${scored}/${targetRows.length}건`,
+              label: `${i}/${rounds}회차 채점 중 — ${scored}/${roundRowCount}건${i > 1 ? " (샘플)" : ""}`,
             });
           }
         );
         if (abort.signal.aborted) break;
-        completedSteps += targetRows.length;
+        completedSteps += roundRowCount;
 
-        // ── 상관계수 계산 ───────────────────────────────────────────
-        const scoredRows = targetRows.filter((r) => scoreMap.has(r.id));
+        // ── 상관계수 계산 (이번 회차에 실제 채점된 행만 사용) ────────
+        // 미채점 행은 이전 W 기준 점수이므로 제외 → 정확한 현재 W 성능 측정
+        const scoredRows = rowsForRound.filter((r) => scoreMap.has(r.id));
         const hookScores = scoredRows.map((r) => scoreMap.get(r.id)!.score);
         const viewCounts = scoredRows.map((r) => r.views);
         lastHookCorr = scoredRows.length >= 2
@@ -293,26 +344,24 @@ export default function OptimizePage() {
           : null;
         setHookCorrHistory((prev) => [...prev, lastHookCorr]);
 
-        // ── 오답 노트: 엣지 케이스 추출 ─────────────────────────────
-        // 데이터가 6개 이상일 때만 추출 (그 미만은 의미 있는 상·하위 25% 구분 불가)
+        // ── 오답 노트: 엣지 케이스 추출 + 다음 회차 mustIncludeIds 갱신 ──
         type EdgeCase = { proxyText: string; aiScore: number; verdict: string; views: number } | null;
-        let falsePositive: EdgeCase = null; // 과대평가: 점수 높은데 조회수 낮음
-        let falseNegative: EdgeCase = null; // 과소평가: 점수 낮은데 조회수 높음
+        let falsePositive: EdgeCase = null;
+        let falseNegative: EdgeCase = null;
+        const nextMustIds = new Set<string>();
 
         if (scoredRows.length >= 6) {
           const n = scoredRows.length;
-          const threshold = Math.max(1, Math.floor(n * 0.25)); // 상·하위 25% 기준 인원 수
+          const threshold = Math.max(1, Math.floor(n * 0.25));
 
-          // 점수 순위 (0 = 가장 높은 점수) / 조회수 순위 (0 = 가장 많은 조회수)
           const byScore = [...scoredRows].sort((a, b) => (scoreMap.get(b.id)?.score ?? 0) - (scoreMap.get(a.id)?.score ?? 0));
           const byViews = [...scoredRows].sort((a, b) => b.views - a.views);
           const scoreRankMap = new Map(byScore.map((r, idx) => [r.id, idx]));
           const viewsRankMap = new Map(byViews.map((r, idx) => [r.id, idx]));
 
-          // False Positive: 점수 상위 25% & 조회수 하위 25% → AI가 과대평가한 케이스
+          // False Positive: 점수 상위 25% & 조회수 하위 25%
           const fpRow = scoredRows
             .filter((r) => scoreRankMap.get(r.id)! < threshold && viewsRankMap.get(r.id)! >= n - threshold)
-            // 괴리가 클수록(조회수 순위 - 점수 순위가 클수록) 앞에 오도록 정렬
             .sort((a, b) => (viewsRankMap.get(b.id)! - scoreRankMap.get(b.id)!) - (viewsRankMap.get(a.id)! - scoreRankMap.get(a.id)!))[0] ?? null;
           if (fpRow) {
             const entry = scoreMap.get(fpRow.id)!;
@@ -322,12 +371,12 @@ export default function OptimizePage() {
               verdict: entry.verdict,
               views: fpRow.views,
             };
+            nextMustIds.add(fpRow.id); // 다음 회차에 반드시 재채점
           }
 
-          // False Negative: 조회수 상위 25% & 점수 하위 25% → AI가 과소평가한 케이스
+          // False Negative: 조회수 상위 25% & 점수 하위 25%
           const fnRow = scoredRows
             .filter((r) => viewsRankMap.get(r.id)! < threshold && scoreRankMap.get(r.id)! >= n - threshold)
-            // 괴리가 클수록(점수 순위 - 조회수 순위가 클수록) 앞에 오도록 정렬
             .sort((a, b) => (scoreRankMap.get(b.id)! - viewsRankMap.get(b.id)!) - (scoreRankMap.get(a.id)! - viewsRankMap.get(a.id)!))[0] ?? null;
           if (fnRow) {
             const entry = scoreMap.get(fnRow.id)!;
@@ -337,33 +386,28 @@ export default function OptimizePage() {
               verdict: entry.verdict,
               views: fnRow.views,
             };
+            nextMustIds.add(fnRow.id); // 다음 회차에 반드시 재채점
           }
         }
+        mustIncludeIds = nextMustIds; // 다음 루프 반복에 넘김
 
-        // ── 최적화: 채점 결과로 W 개선 ─────────────────────────────
-        setTotalProgress({ current: completedSteps, total: totalSteps, label: `${i}/${rounds}회차 최적화 중…` });
-
-        // 502 방지: historyLines를 최대 40행으로 제한 (판별력 높은 행 우선)
+        // ── 히스토리 구성: 이번 회차 채점 행만 포함 ─────────────────
+        // 판별력 높은 순(훅점수 ↔ 조회수 순위 괴리 큰 순)으로 정렬, 최대 40행
         const MAX_HISTORY_ROWS = 40;
-        let historyRows = targetRows;
-        if (targetRows.length > MAX_HISTORY_ROWS) {
-          const sortedByScore = [...targetRows].sort(
-            (a, b) => (scoreMap.get(b.id)?.score ?? 0) - (scoreMap.get(a.id)?.score ?? 0)
-          );
-          const sortedByViews = [...targetRows].sort((a, b) => b.views - a.views);
-          const scoreRank = new Map(sortedByScore.map((r, idx) => [r.id, idx]));
-          const viewsRank = new Map(sortedByViews.map((r, idx) => [r.id, idx]));
-          historyRows = [...targetRows]
-            .sort(
-              (a, b) =>
-                Math.abs((scoreRank.get(b.id) ?? 0) - (viewsRank.get(b.id) ?? 0)) -
-                Math.abs((scoreRank.get(a.id) ?? 0) - (viewsRank.get(a.id) ?? 0))
-            )
-            .slice(0, MAX_HISTORY_ROWS);
-        }
-        const historyLines = historyRows.map((r) =>
-          buildOptimizeHistoryLine(r, optimizeFields, asOfHistory, scoreMap)
-        );
+        const byS = [...scoredRows].sort((a, b) => (scoreMap.get(b.id)?.score ?? 0) - (scoreMap.get(a.id)?.score ?? 0));
+        const byV = [...scoredRows].sort((a, b) => b.views - a.views);
+        const sRank = new Map(byS.map((r, idx) => [r.id, idx]));
+        const vRank = new Map(byV.map((r, idx) => [r.id, idx]));
+        const historyLines = [...scoredRows]
+          .sort((a, b) =>
+            Math.abs((sRank.get(b.id) ?? 0) - (vRank.get(b.id) ?? 0)) -
+            Math.abs((sRank.get(a.id) ?? 0) - (vRank.get(a.id) ?? 0))
+          )
+          .slice(0, MAX_HISTORY_ROWS)
+          .map((r) => buildOptimizeHistoryLine(r, optimizeFields, asOfHistory, scoreMap));
+
+        // ── 최적화 API 호출 ─────────────────────────────────────────
+        setTotalProgress({ current: completedSteps, total: totalSteps, label: `${i}/${rounds}회차 최적화 중…` });
 
         const res = await fetch("/api/analyze", {
           method: "POST",
@@ -377,7 +421,6 @@ export default function OptimizePage() {
               correlation: lastHookCorr ?? stats.corr,
               currentW: iterW,
               historyLines,
-              // 오답 노트: 엣지 케이스가 없으면 null → API에서 기존 방식으로 폴백
               falsePositive,
               falseNegative,
             },
@@ -385,7 +428,6 @@ export default function OptimizePage() {
         });
         const data = await res.json() as OptimizeResult & { error?: string };
         if (!res.ok) {
-          // 이 회차는 실패 — 에러를 메시지에 기록하고 다음 회차로 계속
           setMessage(`${i}회차 최적화 실패: ${data.error ?? "알 수 없는 오류"}`);
           completedSteps += 1;
           setTotalProgress({ current: completedSteps, total: totalSteps, label: `${i}/${rounds}회차 실패 (건너뜀)` });
