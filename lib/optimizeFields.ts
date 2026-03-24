@@ -32,11 +32,14 @@ export const DEFAULT_OPTIMIZE_FIELDS: Record<OptimizeContextField, boolean> = {
   verdict: false,
 };
 
+export type HookScoreEntry = { score: number; verdict: string };
+
 /** MockMozaicRow를 최적화 API용 한 줄로 직렬화 (체크된 필드만 포함) */
 export function buildOptimizeHistoryLine(
   r: MockMozaicRow,
   include: Record<OptimizeContextField, boolean>,
-  asOf: Date
+  asOf: Date,
+  scoreMap?: Map<string, HookScoreEntry>
 ): string {
   const parts: string[] = [];
 
@@ -77,10 +80,12 @@ export function buildOptimizeHistoryLine(
     parts.push(`경과: D+${days}`);
   }
   if (include.hookScore) {
-    parts.push(`훅점수: -`);
+    const s = scoreMap?.get(r.id);
+    parts.push(`훅점수: ${s ? s.score.toFixed(1) : "-"}`);
   }
   if (include.verdict) {
-    parts.push(`판정: -`);
+    const s = scoreMap?.get(r.id);
+    parts.push(`판정: ${s ? s.verdict : "-"}`);
   }
 
   if (parts.length === 0) {

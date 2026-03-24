@@ -9,6 +9,7 @@ import {
   buildOptimizeHistoryLine,
   DEFAULT_OPTIMIZE_FIELDS,
   type OptimizeContextField,
+  type HookScoreEntry,
 } from "@/lib/optimizeFields";
 import { correlationLabel, pearsonCorrelation } from "@/lib/stats";
 import { ANALYSIS_SYSTEM_PROMPT } from "@/lib/analyzer";
@@ -37,11 +38,13 @@ export default function OptimizePage() {
   const [aiModel, setAiModel] = useState<"claude" | "gemini">("claude");
   const [repeatCount, setRepeatCount] = useState(1);
   const [currentRound, setCurrentRound] = useState<number | null>(null);
+  const [scoreProgress, setScoreProgress] = useState<{ current: number; total: number } | null>(null);
   const [runMeta, setRunMeta] = useState<{
     ai: string;
     dataCount: number;
     rounds: number;
     fieldCount: number;
+    hookCorr: number | null;
     ranAt: string;
   } | null>(null);
   const [asOfHistory] = useState(() => new Date());
@@ -119,10 +122,54 @@ export default function OptimizePage() {
     setMessage("");
     setResult(null);
     setRunMeta(null);
+    setScoreProgress(null);
 
     const rounds = Math.max(1, Math.min(repeatCount, 10));
-    const historyLines = targetRows.map((r) => buildOptimizeHistoryLine(r, optimizeFields, asOfHistory));
     let iterW = currentW.trim() || null;
+
+    // ── Phase 1: 각 영상을 현재 W로 실제 채점 ──────────────────────
+    const scoreMap = new Map<string, HookScoreEntry>();
+    setScoreProgress({ current: 0, total: targetRows.length });
+
+    for (let i = 0; i < targetRows.length; i++) {
+      const row = targetRows[i];
+      setScoreProgress({ current: i + 1, total: targetRows.length });
+      try {
+        const scoreText = [row.title, row.description].filter(Boolean).join(" | ");
+        const res = await fetch("/api/analyze", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            text: scoreText,
+            views: row.views,
+            likes: row.likes,
+            systemPrompt: iterW ?? undefined,
+          }),
+        });
+        if (res.ok) {
+          const d = await res.json() as { score?: number; verdict?: string };
+          if (typeof d.score === "number") {
+            scoreMap.set(row.id, { score: d.score, verdict: d.verdict ?? "-" });
+          }
+        }
+      } catch {
+        // 채점 실패 시 해당 행은 "-"로 유지
+      }
+    }
+    setScoreProgress(null);
+
+    // ── Phase 2: 실제 훅점수 ↔ 조회수 상관계수 계산 ────────────────
+    const scoredRows = targetRows.filter((r) => scoreMap.has(r.id));
+    const hookScores = scoredRows.map((r) => scoreMap.get(r.id)!.score);
+    const viewCounts = scoredRows.map((r) => r.views);
+    const hookCorr = scoredRows.length >= 2
+      ? pearsonCorrelation(hookScores, viewCounts)
+      : null;
+
+    // ── Phase 3: 실제 점수 포함한 히스토리 → 최적화 AI 호출 ────────
+    const historyLines = targetRows.map((r) =>
+      buildOptimizeHistoryLine(r, optimizeFields, asOfHistory, scoreMap)
+    );
     let lastResult: OptimizeResult | null = null;
 
     for (let i = 1; i <= rounds; i++) {
@@ -134,7 +181,7 @@ export default function OptimizePage() {
           mode: "optimize",
           ai: aiModel,
           payload: {
-            correlation: stats.corr,
+            correlation: hookCorr ?? stats.corr,
             currentW: iterW,
             historyLines,
           },
@@ -159,6 +206,7 @@ export default function OptimizePage() {
       dataCount: targetRows.length,
       rounds,
       fieldCount: stats.fieldCount,
+      hookCorr,
       ranAt: new Date().toLocaleString("ko-KR"),
     });
   }
@@ -304,12 +352,28 @@ export default function OptimizePage() {
         </div>
         <button className="btn" onClick={runOptimize} disabled={loading || rows.length < 2}>
           {loading
-            ? currentRound !== null
-              ? `최적화 중... (${currentRound}/${repeatCount}회차)`
-              : "최적화 중..."
+            ? scoreProgress
+              ? `채점 중... ${scoreProgress.current}/${scoreProgress.total}`
+              : currentRound !== null
+                ? `최적화 중... (${currentRound}/${repeatCount}회차)`
+                : "준비 중..."
             : "⚡ W 최적화 실행"}
         </button>
       </div>
+
+      {loading && scoreProgress && (
+        <div className="space-y-1">
+          <p className="text-xs text-zinc-500">
+            W로 각 영상 채점 중 — {scoreProgress.current}/{scoreProgress.total}건
+          </p>
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-200">
+            <div
+              className="h-full rounded-full bg-blue-500 transition-[width] duration-150"
+              style={{ width: `${Math.round((scoreProgress.current / scoreProgress.total) * 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {result && (
         <section className="card space-y-3 border border-blue-200 bg-blue-50/30 p-5">
@@ -328,6 +392,11 @@ export default function OptimizePage() {
               <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-zinc-600">
                 필드 {runMeta.fieldCount}개
               </span>
+              {runMeta.hookCorr !== null && (
+                <span className="rounded-full bg-blue-100 px-2.5 py-1 text-blue-700 font-mono-ui">
+                  훅점수 상관계수 {runMeta.hookCorr.toFixed(3)}
+                </span>
+              )}
               <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-zinc-400">
                 {runMeta.ranAt}
               </span>
