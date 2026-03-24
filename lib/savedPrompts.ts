@@ -37,3 +37,13 @@ export function deletePrompt(id: string): SavedPrompt[] {
   localStorage.setItem(SAVED_PROMPTS_KEY, JSON.stringify(next));
   return next;
 }
+
+export function renamePrompt(id: string, newName: string): SavedPrompt[] {
+  const trimmed = newName.trim();
+  if (!trimmed) return loadSavedPrompts();
+  const next = loadSavedPrompts().map((p) =>
+    p.id === id ? { ...p, name: trimmed } : p
+  );
+  localStorage.setItem(SAVED_PROMPTS_KEY, JSON.stringify(next));
+  return next;
+}

@@ -13,8 +13,10 @@ import {
   loadSavedPrompts,
   savePrompt,
   deletePrompt,
+  renamePrompt,
   type SavedPrompt,
 } from "@/lib/savedPrompts";
+import SavedPromptList from "@/components/SavedPromptList";
 
 type MockSimRow = {
   id: string;
@@ -99,6 +101,10 @@ export default function AnalyzePage() {
 
   const handleDeletePrompt = useCallback((id: string) => {
     setSavedPrompts(deletePrompt(id));
+  }, []);
+
+  const handleRenamePrompt = useCallback((id: string, newName: string) => {
+    setSavedPrompts(renamePrompt(id, newName));
   }, []);
 
   const handleLoadPrompt = useCallback((p: SavedPrompt) => {
@@ -200,37 +206,12 @@ export default function AnalyzePage() {
         {/* 저장된 프롬프트 목록 */}
         {showSaved && (
           <div className="rounded-xl border border-zinc-200 bg-zinc-50">
-            {savedPrompts.length === 0 ? (
-              <p className="px-4 py-4 text-sm text-zinc-500">저장된 프롬프트가 없습니다.</p>
-            ) : (
-              <ul className="divide-y divide-zinc-100 max-h-64 overflow-y-auto">
-                {savedPrompts.map((p) => (
-                  <li key={p.id} className="flex items-center gap-3 px-4 py-3">
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-zinc-800">{p.name}</p>
-                      <p className="truncate text-xs text-zinc-400">
-                        {new Date(p.savedAt).toLocaleString("ko-KR")} · {p.prompt.length}자
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      className="btn text-xs"
-                      onClick={() => handleLoadPrompt(p)}
-                    >
-                      불러오기
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-md px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-200 hover:text-red-600 transition"
-                      onClick={() => handleDeletePrompt(p.id)}
-                      aria-label="삭제"
-                    >
-                      ✕
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <SavedPromptList
+              prompts={savedPrompts}
+              onLoad={handleLoadPrompt}
+              onDelete={handleDeletePrompt}
+              onRename={handleRenamePrompt}
+            />
           </div>
         )}
       </section>

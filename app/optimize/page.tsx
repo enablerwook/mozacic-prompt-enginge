@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import AutopilotProgress from "@/components/optimize/AutopilotProgress";
 import MockDataTable from "@/components/optimize/MockDataTable";
 import PromptDiffView from "@/components/optimize/PromptDiffView";
 import { MOCK_BASE_W, MOCK_NEW_W, type MockMozaicRow } from "@/lib/mockMozaicData";
@@ -18,8 +17,10 @@ import {
   loadSavedPrompts,
   savePrompt,
   deletePrompt,
+  renamePrompt,
   type SavedPrompt,
 } from "@/lib/savedPrompts";
+import SavedPromptList from "@/components/SavedPromptList";
 import { OptimizeResult } from "@/types";
 
 export default function OptimizePage() {
@@ -32,7 +33,10 @@ export default function OptimizePage() {
   const [saveNameInput, setSaveNameInput] = useState("");
   const [showSaved, setShowSaved] = useState(false);
   const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [aiModel, setAiModel] = useState<"claude" | "gemini">("claude");
+  const [repeatCount, setRepeatCount] = useState(1);
+  const [currentRound, setCurrentRound] = useState<number | null>(null);
   const [asOfHistory] = useState(() => new Date());
   const [optimizeFields, setOptimizeFields] = useState<Record<OptimizeContextField, boolean>>(
     () => ({ ...DEFAULT_OPTIMIZE_FIELDS })
@@ -75,6 +79,10 @@ export default function OptimizePage() {
     setSavedPrompts(deletePrompt(id));
   }, []);
 
+  const handleRenamePrompt = useCallback((id: string, newName: string) => {
+    setSavedPrompts(renamePrompt(id, newName));
+  }, []);
+
   const handleLoadPrompt = useCallback((p: SavedPrompt) => {
     setCurrentW(p.prompt);
     setShowSaved(false);
@@ -98,27 +106,43 @@ export default function OptimizePage() {
     if (rows.length < 2) return;
     setLoading(true);
     setMessage("");
+    setResult(null);
 
-    const res = await fetch("/api/analyze", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        mode: "optimize",
-        ai: aiModel,
-        payload: {
-          correlation: stats.corr,
-          currentW: currentW.trim() || null,
-          historyLines: rows.map((r) => buildOptimizeHistoryLine(r, optimizeFields, asOfHistory)),
-        },
-      }),
-    });
-    const data = await res.json();
-    setLoading(false);
-    if (!res.ok) {
-      setMessage(data.error || "최적화 실패");
-      return;
+    const rounds = Math.max(1, Math.min(repeatCount, 10));
+    const targetRows = selectedIds.size > 0 ? rows.filter((r) => selectedIds.has(r.id)) : rows;
+    const historyLines = targetRows.map((r) => buildOptimizeHistoryLine(r, optimizeFields, asOfHistory));
+    let iterW = currentW.trim() || null;
+    let lastResult: OptimizeResult | null = null;
+
+    for (let i = 1; i <= rounds; i++) {
+      setCurrentRound(i);
+      const res = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mode: "optimize",
+          ai: aiModel,
+          payload: {
+            correlation: stats.corr,
+            currentW: iterW,
+            historyLines,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setMessage(data.error || "최적화 실패");
+        setLoading(false);
+        setCurrentRound(null);
+        return;
+      }
+      lastResult = data as OptimizeResult;
+      iterW = lastResult.prompt.trim() || iterW;
     }
-    setResult(data as OptimizeResult);
+
+    setLoading(false);
+    setCurrentRound(null);
+    setResult(lastResult);
   }
 
   function applyOptimizedPrompt() {
@@ -181,43 +205,20 @@ export default function OptimizePage() {
 
         {showSaved && (
           <div className="rounded-xl border border-zinc-200 bg-zinc-50">
-            {savedPrompts.length === 0 ? (
-              <p className="px-4 py-4 text-sm text-zinc-500">저장된 프롬프트가 없습니다.</p>
-            ) : (
-              <ul className="max-h-56 divide-y divide-zinc-100 overflow-y-auto">
-                {savedPrompts.map((p) => (
-                  <li key={p.id} className="flex items-center gap-3 px-4 py-3">
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-zinc-800">{p.name}</p>
-                      <p className="truncate text-xs text-zinc-400">
-                        {new Date(p.savedAt).toLocaleString("ko-KR")} · {p.prompt.length}자
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      className="btn text-xs"
-                      onClick={() => handleLoadPrompt(p)}
-                    >
-                      불러오기
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-md px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-200 hover:text-red-600 transition"
-                      onClick={() => handleDeletePrompt(p.id)}
-                      aria-label="삭제"
-                    >
-                      ✕
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <SavedPromptList
+              prompts={savedPrompts}
+              onLoad={handleLoadPrompt}
+              onDelete={handleDeletePrompt}
+              onRename={handleRenamePrompt}
+            />
           </div>
         )}
       </section>
 
       <MockDataTable
         rows={rows}
+        selectedIds={selectedIds}
+        onSelectedIdsChange={setSelectedIds}
         showOptimizeFieldToggles
         optimizeFieldInclude={optimizeFields}
         onOptimizeFieldIncludeChange={setOptimizeField}
@@ -252,8 +253,25 @@ export default function OptimizePage() {
             Gemini
           </button>
         </div>
+        <div className="flex items-center gap-2 text-sm text-zinc-600">
+          <label htmlFor="repeat-count">반복 회차</label>
+          <input
+            id="repeat-count"
+            type="number"
+            min={1}
+            max={10}
+            value={repeatCount}
+            onChange={(e) => setRepeatCount(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
+            className="input w-16 text-center text-sm"
+          />
+          <span className="text-zinc-400">회</span>
+        </div>
         <button className="btn" onClick={runOptimize} disabled={loading || rows.length < 2}>
-          {loading ? "최적화 중..." : "⚡ W 최적화 실행"}
+          {loading
+            ? currentRound !== null
+              ? `최적화 중... (${currentRound}/${repeatCount}회차)`
+              : "최적화 중..."
+            : "⚡ W 최적화 실행"}
         </button>
       </div>
 
@@ -285,8 +303,6 @@ export default function OptimizePage() {
       )}
 
       {message && <p className="text-sm text-red-600">{message}</p>}
-
-      <AutopilotProgress />
 
       <PromptDiffView basePrompt={basePromptForDiff} newPrompt={newPromptForDiff} />
     </div>
