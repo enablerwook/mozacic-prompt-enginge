@@ -403,17 +403,17 @@ export default function MockDataTable({
         }}
         role="dialog"
         aria-label={
-          openMenu === "language" ? "언어 필터" : openMenu === "views" ? "조회수 필터" : "업로드 경과 필터"
+          openMenu === "language" ? "플랫폼 필터" : openMenu === "views" ? "조회수 필터" : "업로드 경과 필터"
         }
       >
         {openMenu === "language" && (
           <div className="space-y-3">
-            <p className="text-xs font-medium text-zinc-600">언어 선택</p>
+            <p className="text-xs font-medium text-zinc-600">플랫폼 선택</p>
             <select
               className="input text-sm"
               value={languageFilter}
               onChange={(e) => setLanguageFilter(e.target.value)}
-              aria-label="언어 필터"
+              aria-label="플랫폼 필터"
             >
               <option value="all">전체</option>
               {languageOptions.map((lang) => (
@@ -608,7 +608,7 @@ export default function MockDataTable({
           <h2 className="text-lg font-semibold text-zinc-900">Mock 데이터 테이블</h2>
           <p className="mt-1 text-xs text-zinc-600">
             Mozaic API 데이터 ·{" "}
-            <span className="text-zinc-800">언어 / 조회수 / 업로드 경과</span> 열 제목을 누르면 필터 · 검색·정렬과
+            <span className="text-zinc-800">플랫폼 / 조회수 / 업로드 경과</span> 열 제목을 누르면 필터 · 검색·정렬과
             함께 AND 적용
           </p>
           {showOptimizeFieldToggles && (
@@ -630,7 +630,7 @@ export default function MockDataTable({
           검색
           <input
             className="input text-sm"
-            placeholder="제목·proxy·스크립트·언어·콘텐츠 타입 검색…"
+            placeholder="제목·proxy·스크립트·플랫폼·콘텐츠 타입 검색…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             aria-label="Mock 데이터 검색"
@@ -716,7 +716,7 @@ export default function MockDataTable({
                     }`}
                     aria-expanded={openMenu === "language"}
                   >
-                    언어
+                    플랫폼
                     <FilterDot on={langActive} />
                     <span className="ml-0.5 text-[10px] text-zinc-600" aria-hidden>
                       ▾

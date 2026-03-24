@@ -51,7 +51,7 @@ export function buildOptimizeHistoryLine(
     parts.push(`스크립트: ${scriptPreview}`);
   }
   if (include.language) {
-    parts.push(`언어: ${r.language || "-"}`);
+    parts.push(`플랫폼: ${r.language || "-"}`);
   }
   if (include.contentType) {
     parts.push(`콘텐츠타입: ${r.contentType || "-"}`);
