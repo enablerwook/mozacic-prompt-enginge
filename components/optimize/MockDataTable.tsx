@@ -158,6 +158,7 @@ export default function MockDataTable({
   const [dMax, setDMax] = useState(D_PLUS_INPUT_MAX);
   /** 분석일 필터: N일 이내만 표시 (ANALYSIS_DAYS_MAX = MAX) */
   const [analysisWithin, setAnalysisWithin] = useState(ANALYSIS_DAYS_MAX);
+  const [detailRow, setDetailRow] = useState<MockMozaicRow | null>(null);
 
   const [openMenu, setOpenMenu] = useState<FilterMenu>(null);
   const [popoverPos, setPopoverPos] = useState<PopoverPos | null>(null);
@@ -652,9 +653,9 @@ export default function MockDataTable({
         </label>
       </div>
 
-      <div ref={scrollAreaRef} className="overflow-x-auto rounded-xl border border-zinc-200">
+      <div ref={scrollAreaRef} className="overflow-auto rounded-xl border border-zinc-200" style={{ maxHeight: "520px" }}>
         <table className="w-full min-w-[1320px] text-left text-sm">
-          <thead className="bg-zinc-100 text-zinc-700">
+          <thead className="sticky top-0 z-10 bg-zinc-100 text-zinc-700">
             <tr>
               <th className="w-10 px-3 py-3">
                 <input
@@ -876,6 +877,8 @@ export default function MockDataTable({
                   className={`border-t border-zinc-200 text-zinc-800 transition ${
                     selected.has(row.id) ? "bg-zinc-100" : "hover:bg-zinc-50"
                   }`}
+                  onDoubleClick={() => setDetailRow(row)}
+                  title="더블클릭하면 상세 내용을 볼 수 있어요"
                 >
                   <td className="px-3 py-2 align-top">
                     <input
@@ -924,6 +927,63 @@ export default function MockDataTable({
         </table>
       </div>
       {footerSlot}
+
+      {detailRow && (
+        <div
+          className="fixed inset-0 z-[300] flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setDetailRow(null)}
+        >
+          <div
+            className="relative w-full max-w-2xl max-h-[80vh] overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              className="absolute right-4 top-4 rounded-full p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"
+              onClick={() => setDetailRow(null)}
+              aria-label="닫기"
+            >
+              ✕
+            </button>
+
+            <h3 className="pr-8 text-base font-semibold text-zinc-900 leading-snug">
+              {detailRow.title}
+            </h3>
+
+            <div className="mt-3 flex flex-wrap gap-2 text-xs">
+              <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-zinc-600">{detailRow.language}</span>
+              <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-zinc-600">{detailRow.contentType}</span>
+              <span className="rounded-full bg-blue-50 px-2.5 py-1 text-blue-700 font-mono-ui">
+                {formatViews(detailRow.views)} 조회
+              </span>
+              <span className="rounded-full bg-zinc-50 px-2.5 py-1 text-zinc-700 font-mono-ui">
+                👍 {formatViews(detailRow.likes)} ({formatLikeRatio(detailRow.likes, detailRow.views)})
+              </span>
+              <span className="rounded-full bg-zinc-50 px-2.5 py-1 text-zinc-500 font-mono-ui">
+                {formatUploadDayPlus(detailRow.date, asOf)}
+              </span>
+              {detailRow.createdAt && (
+                <span className="rounded-full bg-zinc-50 px-2.5 py-1 text-zinc-400 text-[11px]">
+                  분석일: {formatDate(detailRow.createdAt)}
+                </span>
+              )}
+            </div>
+
+            {detailRow.description && (
+              <div className="mt-4">
+                <p className="mb-1 text-xs font-medium text-zinc-500">Proxy</p>
+                <p className="text-sm text-zinc-700 whitespace-pre-wrap leading-relaxed">{detailRow.description}</p>
+              </div>
+            )}
+
+            {detailRow.script && (
+              <div className="mt-4">
+                <p className="mb-1 text-xs font-medium text-zinc-500">스크립트</p>
+                <p className="text-sm text-zinc-700 whitespace-pre-wrap leading-relaxed">{detailRow.script}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </section>
   );
 }
