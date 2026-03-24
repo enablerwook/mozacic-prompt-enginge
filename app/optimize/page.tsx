@@ -37,6 +37,13 @@ export default function OptimizePage() {
   const [aiModel, setAiModel] = useState<"claude" | "gemini">("claude");
   const [repeatCount, setRepeatCount] = useState(1);
   const [currentRound, setCurrentRound] = useState<number | null>(null);
+  const [runMeta, setRunMeta] = useState<{
+    ai: string;
+    dataCount: number;
+    rounds: number;
+    fieldCount: number;
+    ranAt: string;
+  } | null>(null);
   const [asOfHistory] = useState(() => new Date());
   const [optimizeFields, setOptimizeFields] = useState<Record<OptimizeContextField, boolean>>(
     () => ({ ...DEFAULT_OPTIMIZE_FIELDS })
@@ -91,25 +98,29 @@ export default function OptimizePage() {
   const basePromptForDiff = currentW.trim() ? currentW : MOCK_BASE_W;
   const newPromptForDiff = result?.prompt?.trim() ? result.prompt : MOCK_NEW_W;
 
+  const targetRows = useMemo(
+    () => (selectedIds.size > 0 ? rows.filter((r) => selectedIds.has(r.id)) : rows),
+    [rows, selectedIds]
+  );
+
   const stats = useMemo(() => {
-    const withPerf = rows.filter((r) => r.views > 0).length;
-    // hook score 미확보 상태 — 좋아요율 vs 조회수 상관관계로 대체
-    const likeRatios = rows.map((r) =>
-      r.views > 0 ? (r.likes / r.views) * 100 : 0
-    );
-    const viewCounts = rows.map((r) => r.views);
+    const base = targetRows.length > 0 ? targetRows : rows;
+    const withPerf = base.filter((r) => r.views > 0).length;
+    const likeRatios = base.map((r) => (r.views > 0 ? (r.likes / r.views) * 100 : 0));
+    const viewCounts = base.map((r) => r.views);
     const corr = pearsonCorrelation(likeRatios, viewCounts);
-    return { total: rows.length, withPerf, corr, subCount: 9 };
-  }, [rows]);
+    const fieldCount = Object.values(optimizeFields).filter(Boolean).length;
+    return { total: base.length, withPerf, corr, fieldCount };
+  }, [targetRows, rows, optimizeFields]);
 
   async function runOptimize() {
     if (rows.length < 2) return;
     setLoading(true);
     setMessage("");
     setResult(null);
+    setRunMeta(null);
 
     const rounds = Math.max(1, Math.min(repeatCount, 10));
-    const targetRows = selectedIds.size > 0 ? rows.filter((r) => selectedIds.has(r.id)) : rows;
     const historyLines = targetRows.map((r) => buildOptimizeHistoryLine(r, optimizeFields, asOfHistory));
     let iterW = currentW.trim() || null;
     let lastResult: OptimizeResult | null = null;
@@ -143,6 +154,13 @@ export default function OptimizePage() {
     setLoading(false);
     setCurrentRound(null);
     setResult(lastResult);
+    setRunMeta({
+      ai: aiModel,
+      dataCount: targetRows.length,
+      rounds,
+      fieldCount: stats.fieldCount,
+      ranAt: new Date().toLocaleString("ko-KR"),
+    });
   }
 
   function applyOptimizedPrompt() {
@@ -158,12 +176,30 @@ export default function OptimizePage() {
   return (
     <div className="mx-auto max-w-6xl space-y-5">
       <section className="grid gap-3 md:grid-cols-4">
-        <div className="card p-4 text-zinc-800">분석 데이터 수: {stats.total}</div>
-        <div className="card p-4 text-zinc-800">성과 입력 수: {stats.withPerf}</div>
-        <div className="card p-4 text-zinc-800">
-          상관계수: {stats.corr === null ? "-" : stats.corr.toFixed(3)}
+        <div className="card p-4">
+          <p className="text-xs text-zinc-500">분석 데이터 수</p>
+          <p className="mt-1 text-xl font-semibold text-zinc-900">{stats.total}</p>
+          {selectedIds.size > 0 && (
+            <p className="text-xs text-blue-600">선택 {selectedIds.size} / 전체 {rows.length}</p>
+          )}
         </div>
-        <div className="card p-4 text-zinc-800">하위요소 수: {stats.subCount}</div>
+        <div className="card p-4">
+          <p className="text-xs text-zinc-500">성과 입력 수</p>
+          <p className="mt-1 text-xl font-semibold text-zinc-900">{stats.withPerf}</p>
+          <p className="text-xs text-zinc-400">조회수 &gt; 0</p>
+        </div>
+        <div className="card p-4">
+          <p className="text-xs text-zinc-500">상관계수</p>
+          <p className="mt-1 text-xl font-semibold text-zinc-900">
+            {stats.corr === null ? "—" : stats.corr.toFixed(3)}
+          </p>
+          <p className="text-xs text-zinc-400">좋아요율 ↔ 조회수</p>
+        </div>
+        <div className="card p-4">
+          <p className="text-xs text-zinc-500">포함 필드 수</p>
+          <p className="mt-1 text-xl font-semibold text-zinc-900">{stats.fieldCount}</p>
+          <p className="text-xs text-zinc-400">체크된 항목</p>
+        </div>
       </section>
 
       <section className="card space-y-3 p-5">
@@ -278,6 +314,25 @@ export default function OptimizePage() {
       {result && (
         <section className="card space-y-3 border border-blue-200 bg-blue-50/30 p-5">
           <h3 className="text-lg font-semibold text-zinc-900">W 진단 결과</h3>
+          {runMeta && (
+            <div className="flex flex-wrap gap-2 text-xs">
+              <span className="rounded-full bg-zinc-900 px-2.5 py-1 text-white font-medium">
+                {runMeta.ai === "gemini" ? "Gemini" : "Claude"}
+              </span>
+              <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-zinc-600">
+                데이터 {runMeta.dataCount}건
+              </span>
+              <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-zinc-600">
+                {runMeta.rounds}회차
+              </span>
+              <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-zinc-600">
+                필드 {runMeta.fieldCount}개
+              </span>
+              <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-zinc-400">
+                {runMeta.ranAt}
+              </span>
+            </div>
+          )}
           <p className="text-sm text-zinc-600">프롬프트 문제점</p>
           <p className="text-sm text-zinc-800">{result.diagnosis}</p>
           <p className="text-sm text-zinc-600">예측 실패 항목</p>
