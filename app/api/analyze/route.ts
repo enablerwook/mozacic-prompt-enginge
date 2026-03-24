@@ -195,7 +195,7 @@ async function callGemini(system: string, user: string, model: GeminiModel = "ge
   return json.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 }
 
-async function callClaude(system: string, user: string) {
+async function callClaude(system: string, user: string, model = "claude-sonnet-4-6") {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     console.log("[/api/analyze] Missing ANTHROPIC_API_KEY");
@@ -210,7 +210,7 @@ async function callClaude(system: string, user: string) {
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-6",
+      model,
       max_tokens: 4000,
       system,
       messages: [{ role: "user", content: user }],
@@ -271,6 +271,7 @@ export async function POST(req: Request) {
       mode?: string;
       ai?: string;
       geminiVersion?: string;
+      scoringModel?: string;
       text?: unknown;
       views?: unknown;
       likes?: unknown;
@@ -283,6 +284,7 @@ export async function POST(req: Request) {
         mode?: string;
         ai?: string;
         geminiVersion?: string;
+        scoringModel?: string;
         text?: unknown;
         views?: unknown;
         likes?: unknown;
@@ -332,10 +334,11 @@ verdict: "강력한 훅"(≥6) / "보통 훅"(3-5.9) / "약한 훅"(1-2.9) / "�
 ${rowLines}`;
 
       const useGemini = body.ai === "gemini";
-      const geminiModel = resolveGeminiModel(body.geminiVersion);
+      const geminiModel = resolveGeminiModel(body.scoringModel ?? body.geminiVersion);
+      const claudeModel = body.scoringModel === "haiku" ? "claude-haiku-4-5-20251001" : "claude-sonnet-4-6";
       const batchText = useGemini
         ? await callGemini(batchSystem, batchUser, geminiModel)
-        : await callClaude(batchSystem, batchUser);
+        : await callClaude(batchSystem, batchUser, claudeModel);
 
       const parsed = safeParse<Array<{ id: string; score: number; verdict: string }>>(batchText);
       return NextResponse.json(parsed ?? [], { status: 200 });

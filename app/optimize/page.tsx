@@ -37,8 +37,11 @@ export default function OptimizePage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [aiModel, setAiModel] = useState<"claude" | "gemini">("claude");
   const [geminiVersion, setGeminiVersion] = useState<"gemini-2.5-flash" | "gemini-2.0-flash" | "gemini-1.5-pro" | "gemini-1.5-flash">("gemini-2.5-flash");
+  const [fastScoring, setFastScoring] = useState(true); // Haiku / gemini-2.0-flash for scoring
   const [repeatCount, setRepeatCount] = useState(1);
   const abortRef = useRef<AbortController | null>(null);
+  // 캐시: wPromptKey → Map<rowId, HookScoreEntry>
+  const scoreCacheRef = useRef<Map<string, Map<string, HookScoreEntry>>>(new Map());
   const [currentRound, setCurrentRound] = useState<number | null>(null);
   const [scoreProgress, setScoreProgress] = useState<{ current: number; total: number } | null>(null);
   const [runMeta, setRunMeta] = useState<{
@@ -132,59 +135,76 @@ export default function OptimizePage() {
     const rounds = Math.max(1, Math.min(repeatCount, 10));
     let iterW = currentW.trim() || null;
 
-    // ── Phase 1: 배치+병렬 채점 ─────────────────────────────────────
-    const BATCH_SIZE = 15;   // 한 번의 AI 호출로 처리할 행 수
-    const MAX_PARALLEL = 3;  // 동시에 실행할 배치 수
+    // ── Phase 1: 배치+병렬 채점 (캐시 우선) ─────────────────────────
+    const BATCH_SIZE = 20;
+    const MAX_PARALLEL = 5;
+    const scoringModel = fastScoring
+      ? (aiModel === "gemini" ? "gemini-2.0-flash" : "haiku")
+      : undefined;
 
-    const scoreMap = new Map<string, HookScoreEntry>();
-    const batches: (typeof targetRows)[] = [];
-    for (let i = 0; i < targetRows.length; i += BATCH_SIZE) {
-      batches.push(targetRows.slice(i, i + BATCH_SIZE));
-    }
-    setScoreProgress({ current: 0, total: targetRows.length });
+    // 캐시 키: W 첫 200자 (변경 감지용)
+    const wCacheKey = (iterW ?? "default").slice(0, 200);
+    const cached = scoreCacheRef.current.get(wCacheKey) ?? new Map<string, HookScoreEntry>();
+    const scoreMap = new Map<string, HookScoreEntry>(cached);
 
-    let scoredCount = 0;
-    for (let bi = 0; bi < batches.length; bi += MAX_PARALLEL) {
-      if (abort.signal.aborted) break;
-      const chunk = batches.slice(bi, bi + MAX_PARALLEL);
-      await Promise.all(
-        chunk.map(async (batch) => {
-          if (abort.signal.aborted) return;
-          try {
-            const res = await fetch("/api/analyze", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              signal: abort.signal,
-              body: JSON.stringify({
-                mode: "batch-score",
-                ai: aiModel,
-                geminiVersion,
-                payload: {
-                  systemPrompt: iterW ?? undefined,
-                  rows: batch.map((r) => ({
-                    id: r.id,
-                    text: [r.title, r.description].filter(Boolean).join(" | "),
-                    views: r.views,
-                    likes: r.likes,
-                  })),
-                },
-              }),
-            });
-            if (res.ok) {
-              const results = await res.json() as Array<{ id: string; score?: number; verdict?: string }>;
-              for (const d of results) {
-                if (typeof d.score === "number") {
-                  scoreMap.set(d.id, { score: d.score, verdict: d.verdict ?? "-" });
+    const uncachedRows = targetRows.filter((r) => !cached.has(r.id));
+
+    if (uncachedRows.length === 0) {
+      // 전부 캐시 히트 — 채점 스킵
+      setScoreProgress({ current: targetRows.length, total: targetRows.length });
+    } else {
+      const batches: (typeof uncachedRows)[] = [];
+      for (let i = 0; i < uncachedRows.length; i += BATCH_SIZE) {
+        batches.push(uncachedRows.slice(i, i + BATCH_SIZE));
+      }
+      setScoreProgress({ current: cached.size, total: targetRows.length });
+
+      let scoredCount = cached.size;
+      for (let bi = 0; bi < batches.length; bi += MAX_PARALLEL) {
+        if (abort.signal.aborted) break;
+        const chunk = batches.slice(bi, bi + MAX_PARALLEL);
+        await Promise.all(
+          chunk.map(async (batch) => {
+            if (abort.signal.aborted) return;
+            try {
+              const res = await fetch("/api/analyze", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                signal: abort.signal,
+                body: JSON.stringify({
+                  mode: "batch-score",
+                  ai: aiModel,
+                  geminiVersion,
+                  scoringModel,
+                  payload: {
+                    systemPrompt: iterW ?? undefined,
+                    rows: batch.map((r) => ({
+                      id: r.id,
+                      text: [r.title, r.description].filter(Boolean).join(" | "),
+                      views: r.views,
+                      likes: r.likes,
+                    })),
+                  },
+                }),
+              });
+              if (res.ok) {
+                const results = await res.json() as Array<{ id: string; score?: number; verdict?: string }>;
+                for (const d of results) {
+                  if (typeof d.score === "number") {
+                    scoreMap.set(d.id, { score: d.score, verdict: d.verdict ?? "-" });
+                  }
                 }
               }
+            } catch (e) {
+              if ((e as Error).name === "AbortError") return;
             }
-          } catch (e) {
-            if ((e as Error).name === "AbortError") return;
-          }
-          scoredCount += batch.length;
-          setScoreProgress({ current: Math.min(scoredCount, targetRows.length), total: targetRows.length });
-        })
-      );
+            scoredCount += batch.length;
+            setScoreProgress({ current: Math.min(scoredCount, targetRows.length), total: targetRows.length });
+          })
+        );
+      }
+      // 캐시에 저장
+      scoreCacheRef.current.set(wCacheKey, new Map(scoreMap));
     }
     setScoreProgress(null);
 
@@ -369,10 +389,26 @@ export default function OptimizePage() {
           )}
         </div>
 
+        {/* 채점 속도 토글 */}
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-zinc-600">
+            <input
+              type="checkbox"
+              className="checkbox-mozaic checkbox-mozaic-sm"
+              checked={fastScoring}
+              onChange={(e) => setFastScoring(e.target.checked)}
+            />
+            채점 속도 우선
+            <span className="text-xs text-zinc-400">
+              ({aiModel === "gemini" ? "gemini-2.0-flash" : "claude-haiku"} 사용)
+            </span>
+          </label>
+        </div>
+
         {/* Gemini 버전 선택 (gemini 선택 시만 표시) */}
         {aiModel === "gemini" && (
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-zinc-500">Gemini 버전</span>
+            <span className="text-xs text-zinc-500">Gemini 버전 (최적화)</span>
             <div className="flex rounded-lg border border-zinc-200 overflow-hidden text-xs font-medium">
               {(["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"] as const).map((v, idx) => (
                 <button
@@ -422,7 +458,10 @@ export default function OptimizePage() {
       {loading && scoreProgress && (
         <div className="space-y-1">
           <div className="flex items-center justify-between text-xs text-zinc-500">
-            <span>W로 각 영상 채점 중 — {scoreProgress.current}/{scoreProgress.total}건</span>
+            <span>
+              채점 중 — {scoreProgress.current}/{scoreProgress.total}건
+              {fastScoring && <span className="ml-1 text-blue-500">({aiModel === "gemini" ? "2.0-flash" : "Haiku"} 사용)</span>}
+            </span>
             <span>{Math.round((scoreProgress.current / scoreProgress.total) * 100)}%</span>
           </div>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-200">
